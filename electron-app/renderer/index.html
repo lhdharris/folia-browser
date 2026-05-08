@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'">
+  <link rel="icon" href="folia-icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <div id="toolbar">
+
+      <div id="nav-buttons">
+        <button id="back" disabled title="Back">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+            <polyline points="10,3 5,8 10,13" stroke="currentColor" stroke-width="2"
+                      stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+          </svg>
+        </button>
+        <button id="fwd" disabled title="Forward">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+            <polyline points="6,3 11,8 6,13" stroke="currentColor" stroke-width="2"
+                      stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+          </svg>
+        </button>
+        <button id="menu" title="Menu">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+            <circle cx="8" cy="3"  r="1.5" fill="currentColor"/>
+            <circle cx="8" cy="8"  r="1.5" fill="currentColor"/>
+            <circle cx="8" cy="13" r="1.5" fill="currentColor"/>
+          </svg>
+        </button>
+      </div>
+
+      <div id="drag-space">
+        <input id="url-bar" type="text" autocomplete="off" spellcheck="false"
+               placeholder="Type a URL or search…" hidden>
+      </div>
+
+      <button id="download-ring" hidden title="Download" aria-label="Download">
+        <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true">
+          <circle class="track" cx="11" cy="11" r="9" stroke="#d8d8d8" stroke-width="2" fill="none"/>
+          <circle class="fill"  cx="11" cy="11" r="9" stroke="#89cff0" stroke-width="2" fill="none"
+                  stroke-linecap="round" transform="rotate(-90 11 11)"
+                  stroke-dasharray="56.55" stroke-dashoffset="56.55"/>
+          <polyline class="check" points="7,11 10,14 15,8" stroke="#89cff0" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0"/>
+        </svg>
+      </button>
+
+      <div id="wm-buttons">
+        <button id="minimize" title="Minimize">
+          <svg width="10" height="2" viewBox="0 0 10 2" aria-hidden="true">
+            <line x1="0" y1="1" x2="10" y2="1" stroke="currentColor" stroke-width="1.5"
+                  stroke-linecap="round"/>
+          </svg>
+        </button>
+        <button id="maximize" title="Maximize / Restore">
+          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+            <rect x="1" y="1" width="8" height="8" stroke="currentColor" stroke-width="1.5"
+                  fill="none" rx="1"/>
+          </svg>
+        </button>
+        <button id="close" title="Close">
+          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+            <line x1="1" y1="1" x2="9" y2="9" stroke="currentColor" stroke-width="1.5"
+                  stroke-linecap="round"/>
+            <line x1="9" y1="1" x2="1" y2="9" stroke="currentColor" stroke-width="1.5"
+                  stroke-linecap="round"/>
+          </svg>
+        </button>
+      </div>
+
+      <div id="progress-bar"></div>
+    </div>
+
+    <div id="webview-wrap">
+      <webview id="content" allowpopups></webview>
+    </div>
+  </div>
+  <script src="toolbar.js"></script>
+</body>
+</html>

@@ -1,0 +1,239 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 13px;
+  color: #222;
+}
+
+#app {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+  border: 1px solid #9a9a9a;
+  overflow: hidden;
+}
+
+#toolbar {
+  flex: 0 0 48px;
+  display: flex;
+  align-items: center;
+  background: #ececec;
+  border-bottom: 1px solid #b8b8b8;
+  padding: 0 8px;
+  gap: 4px;
+  position: relative;
+  user-select: none;
+  -webkit-app-region: drag;
+}
+
+#toolbar button,
+#toolbar input {
+  -webkit-app-region: no-drag;
+}
+
+#nav-buttons,
+#wm-buttons {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+#drag-space {
+  flex: 1;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 8px;
+  min-width: 0;
+}
+
+#url-bar {
+  width: 100%;
+  max-width: 600px;
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid #b8b8b8;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #222;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: 0.01em;
+  outline: none;
+  transition: border-color 0.1s, box-shadow 0.1s, opacity 0.18s ease, transform 0.18s ease;
+}
+
+#url-bar::placeholder {
+  color: #9a9a9a;
+  font-weight: 300;
+}
+
+#url-bar:focus {
+  border-color: #89cff0;
+  box-shadow: 0 0 0 2px rgba(137, 207, 240, 0.3);
+}
+
+#url-bar.leaving {
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+}
+
+#url-bar[hidden] {
+  display: none;
+}
+
+/* Static action label that replaces the URL bar after the user submits.
+   Set once on Enter; never changes. */
+#action-label {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  color: #444;
+  letter-spacing: 0.01em;
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 600px;
+  opacity: 1;
+  transition: opacity 0.22s ease;
+}
+
+#action-label.entering {
+  opacity: 0;
+}
+
+/* Wrapper provides explicit known dimensions to the webview.
+   This is the canonical Electron <webview> sizing pattern. */
+#webview-wrap {
+  flex: 1 1 auto;
+  display: flex;
+  position: relative;
+  min-height: 0;
+  background: #ffffff;
+}
+
+webview {
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  display: flex !important;
+  background: #ffffff;
+}
+
+button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #444;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+#nav-buttons button {
+  width: 36px;
+  height: 36px;
+}
+
+#wm-buttons button {
+  width: 32px;
+  height: 32px;
+}
+
+button:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+button:active:not(:disabled) {
+  background: rgba(0, 0, 0, 0.14);
+}
+
+button:disabled {
+  color: #bbb;
+  cursor: default;
+}
+
+#close:hover {
+  background: #e81123;
+  color: white;
+}
+
+/* Loading progress bar — sits flush at the bottom edge of the toolbar */
+#progress-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  width: 0%;
+  background: #89cff0;
+  opacity: 1;
+  pointer-events: none;
+}
+
+/* Download progress ring — sits between the URL bar and the window controls.
+   Stroke circumference = 2π·9 ≈ 56.55; JS sets stroke-dashoffset to
+   (1 - progress) * circumference. */
+#download-ring {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  cursor: default;
+}
+
+#download-ring[hidden] {
+  display: none;
+}
+
+#download-ring .fill {
+  transition: stroke-dashoffset 0.18s linear;
+}
+
+#download-ring.complete {
+  cursor: pointer;
+}
+
+#download-ring.complete .check {
+  opacity: 1;
+  transition: opacity 0.18s ease 0.05s;
+}
+
+#download-ring.complete .fill {
+  opacity: 0.55;
+}
+
+/* Click-during-download feedback: brief shake + red tint on the ring to
+   communicate "still downloading, can't open the folder yet". */
+@keyframes ring-shake-red {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-3px); }
+  40%, 80% { transform: translateX(3px); }
+}
+#download-ring.shake-red { animation: ring-shake-red 360ms ease-in-out; }
+#download-ring.shake-red .fill { stroke: #b3261e; }
+#download-ring.shake-red .track { stroke: #f1d4d1; }
+
+/* macOS: native traffic lights sit at the top-left of the window via
+   titleBarStyle: 'hiddenInset', so HTML window controls are hidden and
+   the toolbar is padded to clear the lights. */
+.platform-darwin #wm-buttons { display: none; }
+.platform-darwin #toolbar { padding-left: 80px; }
+

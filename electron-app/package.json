@@ -1,0 +1,67 @@
+{
+  "name": "folia-browser",
+  "version": "1.0.0",
+  "description": "Folia Browser — frameless single-page Electron browser. No tabs; every popup gets its own window. Widevine via Castlabs ECS.",
+  "main": "main.js",
+  "author": {
+    "name": "Louis Harris",
+    "email": "lhd.louis.harris@gmail.com"
+  },
+  "homepage": "https://github.com/lhdharris/folia-browser",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "build:linux": "electron-builder --linux rpm",
+    "build:mac": "electron-builder --mac zip",
+    "build:win": "electron-builder --win nsis"
+  },
+  "devDependencies": {
+    "electron": "https://github.com/castlabs/electron-releases#v42.0.0+wvcus",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "com.github.lhdharris.folia-browser",
+    "productName": "Folia Browser",
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**"
+    ],
+    "protocols": [
+      {
+        "name": "Web URL",
+        "schemes": ["http", "https"]
+      }
+    ],
+    "electronDownload": {
+      "mirror": "https://github.com/castlabs/electron-releases/releases/download/"
+    },
+    "linux": {
+      "target": ["rpm"],
+      "category": "Network",
+      "executableName": "folia-browser",
+      "maintainer": "lhd.louis.harris@gmail.com",
+      "icon": "build/icons",
+      "mimeTypes": [
+        "x-scheme-handler/http",
+        "x-scheme-handler/https",
+        "text/html"
+      ]
+    },
+    "mac": {
+      "target": ["zip"],
+      "category": "public.app-category.utilities",
+      "icon": "build/icon.icns",
+      "identity": null
+    },
+    "win": {
+      "target": ["nsis"],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

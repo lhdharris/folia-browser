@@ -1,0 +1,29 @@
+<svg id="hero-sky" width="320" height="320" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" data-om-id="75bd3dcc:11">
+      <defs data-om-id="75bd3dcc:12">
+        <linearGradient id="bg-sky" x1="0" y1="0" x2="0" y2="1" data-om-id="75bd3dcc:13">
+          <stop offset="0" stop-color="#EFF8FE" data-om-id="75bd3dcc:14"/>
+          <stop offset="1" stop-color="#B6E5FB" data-om-id="75bd3dcc:15"/>
+        </linearGradient>
+        <radialGradient id="globe-sky" cx="0.36" cy="0.30" r="0.95" data-om-id="75bd3dcc:16">
+          <stop offset="0" stop-color="#DBF3FE" data-om-id="75bd3dcc:17"/>
+          <stop offset="0.55" stop-color="#8FD9FB" data-om-id="75bd3dcc:18"/>
+          <stop offset="1" stop-color="#43BFF8" data-om-id="75bd3dcc:19"/>
+        </radialGradient>
+        <radialGradient id="globe-sky-hi" cx="0.32" cy="0.26" r="0.45" data-om-id="75bd3dcc:20">
+          <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.55" data-om-id="75bd3dcc:21"/>
+          <stop offset="1" stop-color="#FFFFFF" stop-opacity="0" data-om-id="75bd3dcc:22"/>
+        </radialGradient>
+      </defs>
+      <rect width="1024" height="1024" rx="225" fill="url(#bg-sky)" data-om-id="75bd3dcc:23"/>
+      <rect x="1.5" y="1.5" width="1021" height="1021" rx="223.5" fill="none" stroke="rgba(61,86,97,0.07)" stroke-width="3" data-om-id="75bd3dcc:24"/>
+
+      <!-- window -->
+      <g stroke="#3D5661" stroke-width="22" stroke-linecap="round" stroke-linejoin="round" fill="none" data-om-id="75bd3dcc:25">
+        <rect x="112" y="176" width="800" height="672" rx="56" fill="#FFFFFF" fill-opacity="0.55" data-om-id="75bd3dcc:26"/>
+        <line x1="132" y1="288" x2="892" y2="288" data-om-id="75bd3dcc:27"/>
+      </g>
+      <circle cx="160" cy="232" r="14" fill="#43BFF8" data-om-id="75bd3dcc:28"/>
+
+      <!-- www -->
+      <text x="512" y="572" text-anchor="middle" dominant-baseline="central" font-family="'Source Serif 4','Iowan Old Style',Georgia,serif" font-weight="400" font-style="italic" font-size="260" letter-spacing="-6" fill="#3D5661" fill-opacity="0.85" data-om-id="75bd3dcc:29">www</text>
+    </svg>

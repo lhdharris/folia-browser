@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'">
+  <link rel="icon" href="folia-icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="settings.css">
+  <title>Settings</title>
+</head>
+<body>
+  <div id="app">
+    <header id="titlebar">
+      <span class="title">Settings</span>
+      <button id="close" title="Close">
+        <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+          <line x1="1" y1="1" x2="9" y2="9" stroke="currentColor" stroke-width="1.5"
+                stroke-linecap="round"/>
+          <line x1="9" y1="1" x2="1" y2="9" stroke="currentColor" stroke-width="1.5"
+                stroke-linecap="round"/>
+        </svg>
+      </button>
+    </header>
+
+    <main>
+      <section>
+        <h2>Search engine</h2>
+        <label><input type="radio" name="searchEngine" value="duckduckgo"> DuckDuckGo</label>
+        <label><input type="radio" name="searchEngine" value="google"> Google</label>
+        <label><input type="radio" name="searchEngine" value="bing"> Bing</label>
+      </section>
+
+      <section>
+        <h2>Privacy</h2>
+        <div class="row">
+          <button class="action" id="delete-cookies">Delete cookies</button>
+          <span class="confirm" data-for="delete-cookies">Done</span>
+        </div>
+        <div class="row">
+          <button class="action" id="delete-cache">Delete cache</button>
+          <span class="confirm" data-for="delete-cache">Done</span>
+        </div>
+        <p class="hint">Wipes cookies / HTTP cache across every site.</p>
+      </section>
+
+      <section>
+        <h2>Downloads</h2>
+        <div class="row download-row">
+          <span id="download-path" class="path-display"></span>
+          <button class="action" id="pick-download-folder">Change…</button>
+        </div>
+        <label><input type="checkbox" id="ask-download-toggle"> Ask every time</label>
+        <p class="hint">Files are saved to the chosen folder unless "ask every time" is enabled.</p>
+      </section>
+
+      <section>
+        <h2>Playback</h2>
+        <label><input type="checkbox" id="drm-toggle"> Enable DRM (Widevine)</label>
+        <p class="hint">Premium video sites (Netflix, Spotify, etc.) need this enabled. The Widevine CDM installs automatically on first launch — restart the app once after installation. Reload the page after toggling.</p>
+      </section>
+    </main>
+  </div>
+  <script src="settings.js"></script>
+</body>
+</html>
