@@ -721,36 +721,38 @@ async function savePageAsPdf(win, guest) {
   const send = (payload) => {
     if (!win.isDestroyed()) win.webContents.send('download-event', payload);
   };
-  const id = ++downloadCounter;
   try {
     const title = guest.getTitle() || 'page';
     const safe = title.replace(/[^a-z0-9 _\-]/gi, '').trim().slice(0, 80) || 'page';
-    const filename = `${safe}.pdf`;
 
-    let savePath;
-    if (settings.askDownloadPath) {
-      const res = await dialog.showSaveDialog(win, {
-        defaultPath: path.join(effectiveDownloadDir(), filename),
-        filters: [{ name: 'PDF', extensions: ['pdf'] }],
-        title: 'Save page as PDF',
-      });
-      if (res.canceled || !res.filePath) return;
-      savePath = res.filePath;
-    } else {
-      savePath = uniqueDownloadPath(effectiveDownloadDir(), filename);
-      try { fs.mkdirSync(path.dirname(savePath), { recursive: true }); } catch {}
+    // PDF save is a user-initiated action from the ⋮ menu, not a passive
+    // download — always prompt for filename + location, regardless of the
+    // askDownloadPath setting which only governs background downloads.
+    const res = await dialog.showSaveDialog(win, {
+      defaultPath: path.join(effectiveDownloadDir(), `${safe}.pdf`),
+      filters: [{ name: 'PDF', extensions: ['pdf'] }],
+      title: 'Save page as PDF',
+    });
+    if (res.canceled || !res.filePath) return;
+    const savePath = res.filePath;
+    const filename = path.basename(savePath);
+
+    // Ring appears after the dialog closes so it's feedback for the actual
+    // save work (printToPDF + write), which can take a few seconds on long
+    // pages. printToPDF doesn't surface progress, so the ring sits at 0%
+    // until the write completes.
+    const id = ++downloadCounter;
+    send({ kind: 'started', id, filename });
+
+    try {
+      const pdf = await guest.printToPDF({ printBackground: true });
+      await fs.promises.writeFile(savePath, pdf);
+      send({ kind: 'done', id, filename, savePath });
+    } catch (err) {
+      send({ kind: 'failed', id, state: 'failed' });
+      dialog.showErrorBox('Save as PDF failed', err.message || String(err));
     }
-
-    // Ring goes visible immediately so the user has feedback during printToPDF,
-    // which can take a few seconds on long pages. printToPDF doesn't surface
-    // progress, so we just leave the ring at 0% until the write completes.
-    send({ kind: 'started', id, filename: path.basename(savePath) });
-
-    const pdf = await guest.printToPDF({ printBackground: true });
-    await fs.promises.writeFile(savePath, pdf);
-    send({ kind: 'done', id, filename: path.basename(savePath), savePath });
   } catch (err) {
-    send({ kind: 'failed', id, state: 'failed' });
     dialog.showErrorBox('Save as PDF failed', err.message || String(err));
   }
 }

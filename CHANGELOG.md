@@ -8,12 +8,20 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [1.1.2]
 
 ### Changed
-- Save page as PDF now uses the same download ring as regular downloads: a
-  progress ring appears in the toolbar while the PDF is being generated and
-  written, turns green with a checkmark when it's saved, and opens the
-  containing folder (with the file highlighted) on click. Replaces the
-  silent native save dialog as the default — the dialog is still used when
-  Settings → "Ask where to save each file" is enabled.
+- Save page as PDF now shows the download ring in the toolbar after the
+  save dialog closes: the ring tracks the PDF generation + write, turns
+  green with a checkmark when it's saved, and opens the containing folder
+  (with the file highlighted) on click. The native save dialog still
+  always opens first — PDF save is a deliberate user action and always
+  prompts for filename and location, independent of the
+  "Ask where to save each file" setting which only governs background
+  downloads.
+
+### Fixed
+- Window title now reads "Folia Browser" instead of "folia-browser" in
+  taskbars, multitasking / overview views, and Alt-Tab. `renderer/index.html`
+  was missing a `<title>` element, so Electron fell back to `app.getName()`
+  (the lowercase package name).
 
 ## [1.1.0] — Unreleased
 
