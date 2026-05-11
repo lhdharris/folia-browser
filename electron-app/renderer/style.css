@@ -9,7 +9,7 @@ html, body {
   height: 100%;
   overflow: hidden;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  font-size: 13px;
+  font-size: 15px;
   color: #222;
 }
 
@@ -72,7 +72,7 @@ html, body {
   background: #ffffff;
   color: #222;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 400;
   letter-spacing: 0.01em;
   outline: none;
@@ -103,7 +103,7 @@ html, body {
    Set once on Enter; never changes. */
 #action-label {
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 500;
   color: #444;
   letter-spacing: 0.01em;
@@ -280,7 +280,7 @@ button:disabled {
 #permission-popover[hidden] { display: none; }
 
 #permission-popover h3 {
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.04em;
   color: #888;
@@ -289,7 +289,7 @@ button:disabled {
 }
 
 #permission-popover .prompt-text {
-  font-size: 13px;
+  font-size: 15px;
   line-height: 1.45;
   color: #222;
   margin-bottom: 12px;
@@ -306,7 +306,7 @@ button:disabled {
 #permission-popover .prompt-buttons button {
   padding: 6px 14px;
   border-radius: 4px;
-  font-size: 13px;
+  font-size: 15px;
   cursor: pointer;
   border: 1px solid #b8b8b8;
   background: #ffffff;
@@ -330,7 +330,7 @@ button:disabled {
 #permission-popover .row + .row { border-top: 1px solid #f0f0f0; }
 
 #permission-popover .row-label {
-  font-size: 13px;
+  font-size: 15px;
   color: #222;
   display: flex;
   flex-direction: column;
@@ -338,7 +338,7 @@ button:disabled {
 }
 
 #permission-popover .row-label .in-use {
-  font-size: 11px;
+  font-size: 13px;
   color: #2ea44f;
   font-weight: 500;
 }
@@ -352,7 +352,7 @@ button:disabled {
 
 #permission-popover .seg button {
   padding: 4px 8px;
-  font-size: 11px;
+  font-size: 13px;
   background: #ffffff;
   color: #555;
   border: none;
@@ -412,7 +412,7 @@ button:disabled {
   color: #222;
   border: none;
   font: inherit;
-  font-size: 13px;
+  font-size: 15px;
   text-align: left;
   cursor: pointer;
   white-space: nowrap;
@@ -427,7 +427,7 @@ button:disabled {
 
 #app-menu .item .accel {
   color: #888;
-  font-size: 12px;
+  font-size: 14px;
   margin-left: 24px;
 }
 
