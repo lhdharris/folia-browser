@@ -1,6 +1,6 @@
 {
   "name": "folia-browser",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Folia Browser — frameless single-page Electron browser. No tabs; every popup gets its own window. Widevine via Castlabs ECS.",
   "main": "main.js",
   "author": {
@@ -11,8 +11,8 @@
   "scripts": {
     "start": "electron .",
     "build": "electron-builder",
-    "build:linux": "electron-builder --linux rpm",
-    "build:mac": "electron-builder --mac zip",
+    "build:linux": "electron-builder --linux rpm deb",
+    "build:mac": "electron-builder --mac dmg",
     "build:win": "electron-builder --win nsis"
   },
   "devDependencies": {
@@ -25,6 +25,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "webview-preload.js",
       "renderer/**"
     ],
     "protocols": [
@@ -37,7 +38,7 @@
       "mirror": "https://github.com/castlabs/electron-releases/releases/download/"
     },
     "linux": {
-      "target": ["rpm"],
+      "target": ["rpm", "deb"],
       "category": "Network",
       "executableName": "folia-browser",
       "maintainer": "lhd.louis.harris@gmail.com",
@@ -49,9 +50,9 @@
       ]
     },
     "mac": {
-      "target": ["zip"],
+      "target": ["dmg"],
       "category": "public.app-category.utilities",
-      "icon": "build/icon.icns",
+      "icon": "build/icon.png",
       "identity": null
     },
     "win": {

@@ -65,10 +65,10 @@ html, body {
 main {
   flex: 1 1 auto;
   overflow-y: auto;
-  padding: 18px 22px;
+  padding: 16px 20px;
   display: flex;
   flex-direction: column;
-  gap: 22px;
+  gap: 18px;
 }
 
 section {
@@ -83,100 +83,99 @@ h2 {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: #666;
-  margin-bottom: 2px;
 }
 
-label {
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.thumb {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  user-select: none;
-}
-
-label input {
-  margin: 0;
-}
-
-.row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.action {
-  padding: 6px 14px;
-  border: 1px solid #b8b8b8;
-  border-radius: 4px;
-  background: #ffffff;
-  color: #222;
-  font: inherit;
-  cursor: pointer;
-  transition: background 0.1s, border-color 0.1s, color 0.18s ease, opacity 0.18s ease;
-}
-
-.action:hover {
-  background: #f3f3f3;
-  border-color: #9a9a9a;
-}
-
-.action:active {
-  background: #e6e6e6;
-}
-
-/* Brief green confirmation flash on action buttons after their work
-   completes (e.g. "Delete cookies" → "deleted"). */
-.action.flashed {
-  color: #2a8a2a;
-  border-color: #b9dfb9;
-  background: #ecf7ec;
-}
-
-.action.flashed:hover {
-  background: #ecf7ec;
-  border-color: #b9dfb9;
-}
-
-.hint {
-  font-size: 12px;
-  color: #777;
-  line-height: 1.4;
-}
-
-.download-row {
-  align-items: center;
-}
-
-.path-display {
-  flex: 1;
-  min-width: 0;
-  padding: 6px 10px;
-  border: 1px solid #d8d8d8;
-  border-radius: 4px;
+  flex-direction: column;
+  border: 2px solid transparent;
+  border-radius: 6px;
   background: #f7f7f7;
-  color: #444;
+  cursor: pointer;
+  overflow: hidden;
+  transition: border-color 0.1s, background 0.1s, transform 0.1s;
+}
+
+.thumb:hover {
+  background: #efefef;
+}
+
+.thumb.selected {
+  border-color: #89cff0;
+  background: #e8f4fb;
+}
+
+.thumb img {
+  width: 100%;
+  height: 110px;
+  object-fit: contain;
+  background: #ffffff;
+  border-bottom: 1px solid #e6e6e6;
+}
+
+.thumb .label {
+  padding: 6px 10px;
   font-size: 12px;
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color: #333;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.path-display.dim {
-  opacity: 0.5;
+.hint {
+  font-size: 12px;
+  color: #777;
 }
 
-select {
-  padding: 4px 8px;
+footer {
+  flex: 0 0 56px;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  padding: 0 20px;
+  border-top: 1px solid #ececec;
+  background: #fafafa;
+}
+
+.action {
+  padding: 7px 18px;
   border: 1px solid #b8b8b8;
   border-radius: 4px;
   background: #ffffff;
   color: #222;
   font: inherit;
   cursor: pointer;
+  transition: background 0.1s, border-color 0.1s, opacity 0.1s;
 }
 
-select:hover {
+.action:hover:not(:disabled) {
+  background: #f3f3f3;
   border-color: #9a9a9a;
 }
 
+.action:active:not(:disabled) {
+  background: #e6e6e6;
+}
+
+.action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.action.primary {
+  background: #89cff0;
+  border-color: #89cff0;
+  color: #ffffff;
+}
+
+.action.primary:hover:not(:disabled) {
+  background: #6fc1e8;
+  border-color: #6fc1e8;
+}

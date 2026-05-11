@@ -30,6 +30,33 @@
             <circle cx="8" cy="13" r="1.5" fill="currentColor"/>
           </svg>
         </button>
+        <button id="lock-button" hidden title="Site permissions">
+          <svg class="lock-closed" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+            <rect x="3" y="7" width="10" height="7" rx="1.2" stroke="currentColor"
+                  stroke-width="1.5" fill="none"/>
+            <path d="M5 7 V5 a3 3 0 0 1 6 0 V7" stroke="currentColor" stroke-width="1.5"
+                  fill="none" stroke-linecap="round"/>
+          </svg>
+          <svg class="lock-open" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+            <rect x="3" y="7" width="10" height="7" rx="1.2" stroke="currentColor"
+                  stroke-width="1.5" fill="none"/>
+            <path d="M5 7 V5 a3 3 0 0 1 6 0" stroke="currentColor" stroke-width="1.5"
+                  fill="none" stroke-linecap="round"/>
+          </svg>
+        </button>
+      </div>
+
+      <div id="permission-popover" hidden></div>
+
+      <div id="app-menu-backdrop" hidden></div>
+      <div id="app-menu" hidden>
+        <button class="item" data-action="new-window">New window</button>
+        <div class="separator"></div>
+        <button class="item" data-action="refresh" data-needs-page>Refresh<span class="accel" data-key="R"></span></button>
+        <button class="item" data-action="copy-url" data-needs-page>Copy URL</button>
+        <button class="item" data-action="save-pdf" data-needs-page>Save page as PDF…</button>
+        <div class="separator"></div>
+        <button class="item" data-action="settings">Settings</button>
       </div>
 
       <div id="drag-space">
@@ -43,6 +70,8 @@
           <circle class="fill"  cx="11" cy="11" r="9" stroke="#89cff0" stroke-width="2" fill="none"
                   stroke-linecap="round" transform="rotate(-90 11 11)"
                   stroke-dasharray="56.55" stroke-dashoffset="56.55"/>
+          <path class="arrow" d="M11 6 V14 M8 11 L11 14 L14 11" stroke="#89cff0" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round" fill="none"/>
           <polyline class="check" points="7,11 10,14 15,8" stroke="#89cff0" stroke-width="2"
                     stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0"/>
         </svg>
@@ -75,7 +104,7 @@
     </div>
 
     <div id="webview-wrap">
-      <webview id="content" allowpopups></webview>
+      <webview id="content" allowpopups partition="persist:folia"></webview>
     </div>
   </div>
   <script src="toolbar.js"></script>

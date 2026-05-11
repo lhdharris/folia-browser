@@ -23,23 +23,46 @@
 
     <main>
       <section>
+        <h2>Appearance</h2>
+        <label><input type="checkbox" id="pastel-toggle"> Tint windows with a pastel hue</label>
+        <p class="hint">When more than one window is open, each toolbar gets its own soft colour so you can tell windows apart at a glance.</p>
+      </section>
+
+      <section>
         <h2>Search engine</h2>
+        <label><input type="radio" name="searchEngine" value="ecosia"> Ecosia</label>
         <label><input type="radio" name="searchEngine" value="duckduckgo"> DuckDuckGo</label>
         <label><input type="radio" name="searchEngine" value="google"> Google</label>
         <label><input type="radio" name="searchEngine" value="bing"> Bing</label>
       </section>
 
       <section>
+        <h2>Zoom</h2>
+        <div class="row">
+          <label for="zoom-select">Default page zoom</label>
+          <select id="zoom-select">
+            <option value="0.5">50%</option>
+            <option value="0.75">75%</option>
+            <option value="0.9">90%</option>
+            <option value="1">100%</option>
+            <option value="1.1">110%</option>
+            <option value="1.25">125%</option>
+            <option value="1.5">150%</option>
+            <option value="2">200%</option>
+          </select>
+        </div>
+        <p class="hint">Sets the default size for text and images on every page you open.</p>
+      </section>
+
+      <section>
         <h2>Privacy</h2>
         <div class="row">
-          <button class="action" id="delete-cookies">Delete cookies</button>
-          <span class="confirm" data-for="delete-cookies">Done</span>
+          <button class="action" id="delete-cookies" data-flash="Deleted!">Delete cookies</button>
         </div>
         <div class="row">
-          <button class="action" id="delete-cache">Delete cache</button>
-          <span class="confirm" data-for="delete-cache">Done</span>
+          <button class="action" id="delete-cache" data-flash="Deleted!">Delete cache</button>
         </div>
-        <p class="hint">Wipes cookies / HTTP cache across every site.</p>
+        <p class="hint">Delete cookies signs you out of every site and forgets your preferences. Delete cache clears stored images and files so pages reload fresh.</p>
       </section>
 
       <section>
@@ -49,13 +72,13 @@
           <button class="action" id="pick-download-folder">Change…</button>
         </div>
         <label><input type="checkbox" id="ask-download-toggle"> Ask every time</label>
-        <p class="hint">Files are saved to the chosen folder unless "ask every time" is enabled.</p>
+        <p class="hint">Where downloaded files are saved. Tick "Ask every time" to choose a location for each download instead.</p>
       </section>
 
       <section>
         <h2>Playback</h2>
         <label><input type="checkbox" id="drm-toggle"> Enable DRM (Widevine)</label>
-        <p class="hint">Premium video sites (Netflix, Spotify, etc.) need this enabled. The Widevine CDM installs automatically on first launch — restart the app once after installation. Reload the page after toggling.</p>
+        <p class="hint">Required for paid streaming services like Netflix and Spotify. The first time you turn this on, restart Folia so it can finish setting up. Reload the page whenever you change this setting.</p>
       </section>
     </main>
   </div>

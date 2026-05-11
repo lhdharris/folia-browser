@@ -30,13 +30,14 @@ html, body {
   flex: 0 0 48px;
   display: flex;
   align-items: center;
-  background: #ececec;
+  background: var(--toolbar-bg, #ececec);
   border-bottom: 1px solid #b8b8b8;
   padding: 0 8px;
   gap: 4px;
   position: relative;
   user-select: none;
   -webkit-app-region: drag;
+  transition: background 0.4s ease;
 }
 
 #toolbar button,
@@ -67,7 +68,7 @@ html, body {
   height: 32px;
   padding: 0 14px;
   border: 1px solid #b8b8b8;
-  border-radius: 6px;
+  border-radius: 4px;
   background: #ffffff;
   color: #222;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -142,7 +143,7 @@ button {
   align-items: center;
   justify-content: center;
   border: none;
-  border-radius: 6px;
+  border-radius: 4px;
   background: transparent;
   color: #444;
   cursor: pointer;
@@ -207,21 +208,36 @@ button:disabled {
   transition: stroke-dashoffset 0.18s linear;
 }
 
+/* Down-arrow inside the ring while a download is in progress; hides the
+   moment the download completes and the checkmark fades in. */
+#download-ring .arrow {
+  opacity: 1;
+  transition: opacity 0.18s ease, stroke 0.18s ease;
+}
+
 #download-ring.complete {
   cursor: pointer;
 }
 
+#download-ring.complete .arrow {
+  opacity: 0;
+}
+
+/* Completion: ring + checkmark go green. */
+#download-ring.complete .fill {
+  opacity: 0.55;
+  stroke: #2ea44f;
+}
+
 #download-ring.complete .check {
   opacity: 1;
+  stroke: #2ea44f;
   transition: opacity 0.18s ease 0.05s;
 }
 
-#download-ring.complete .fill {
-  opacity: 0.55;
-}
-
 /* Click-during-download feedback: brief shake + red tint on the ring to
-   communicate "still downloading, can't open the folder yet". */
+   communicate "still downloading, can't open the folder yet". The arrow
+   inside follows the ring's stroke colour. */
 @keyframes ring-shake-red {
   0%, 100% { transform: translateX(0); }
   20%, 60% { transform: translateX(-3px); }
@@ -229,11 +245,208 @@ button:disabled {
 }
 #download-ring.shake-red { animation: ring-shake-red 360ms ease-in-out; }
 #download-ring.shake-red .fill { stroke: #b3261e; }
+#download-ring.shake-red .arrow { stroke: #b3261e; }
 #download-ring.shake-red .track { stroke: #f1d4d1; }
+
+/* Lock button — appears next to ⋮ once the page has either requested or
+   been granted any tracked permission for the current hostname. Closed
+   by default; turns warm + swaps to open lock SVG while a stream/watch
+   is live in the page. */
+#lock-button[hidden] { display: none; }
+#lock-button .lock-open { display: none; }
+#lock-button.active .lock-closed { display: none; }
+#lock-button.active .lock-open { display: block; }
+#lock-button.active { color: #2ea44f; }
+
+/* Permission popover — anchored under the lock button. Two modes share
+   the container: a prompt (first-time camera/mic/location request) and a
+   manage panel (per-hostname allow/block/ask grid). */
+#permission-popover {
+  position: fixed;
+  top: 0;
+  left: 0;
+  background: #ffffff;
+  border: 1px solid #b8b8b8;
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+  padding: 12px 14px;
+  min-width: 280px;
+  max-width: 360px;
+  z-index: 100;
+  -webkit-app-region: no-drag;
+  user-select: none;
+}
+
+#permission-popover[hidden] { display: none; }
+
+#permission-popover h3 {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #888;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+#permission-popover .prompt-text {
+  font-size: 13px;
+  line-height: 1.45;
+  color: #222;
+  margin-bottom: 12px;
+}
+
+#permission-popover .prompt-text strong { font-weight: 600; }
+
+#permission-popover .prompt-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+#permission-popover .prompt-buttons button {
+  padding: 6px 14px;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+  border: 1px solid #b8b8b8;
+  background: #ffffff;
+  color: #333;
+}
+
+#permission-popover .prompt-buttons .allow {
+  background: #89cff0;
+  border-color: #89cff0;
+  color: #ffffff;
+}
+
+#permission-popover .row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  gap: 12px;
+}
+
+#permission-popover .row + .row { border-top: 1px solid #f0f0f0; }
+
+#permission-popover .row-label {
+  font-size: 13px;
+  color: #222;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+#permission-popover .row-label .in-use {
+  font-size: 11px;
+  color: #2ea44f;
+  font-weight: 500;
+}
+
+#permission-popover .seg {
+  display: flex;
+  border: 1px solid #d8d8d8;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+#permission-popover .seg button {
+  padding: 4px 8px;
+  font-size: 11px;
+  background: #ffffff;
+  color: #555;
+  border: none;
+  cursor: pointer;
+  border-right: 1px solid #d8d8d8;
+}
+
+#permission-popover .seg button:last-child { border-right: none; }
+#permission-popover .seg button.current.allow { background: #d3edf7; color: #1a5b7a; }
+#permission-popover .seg button.current.block { background: #f7d8d6; color: #872119; }
+#permission-popover .seg button.current.ask   { background: #ececec; color: #333; }
+
+/* Invisible backdrop covering the whole window (including the webview area)
+   while the ⋮ menu is open. Without this, clicks inside the <webview> never
+   bubble to the toolbar's document, so the outside-click handler couldn't
+   see them and the menu stayed open. The backdrop sits one z-index below
+   the menu itself so menu clicks still land normally. */
+#app-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 99;
+  -webkit-app-region: no-drag;
+}
+#app-menu-backdrop[hidden] { display: none; }
+
+/* Toolbar ⋮ dropdown menu. Custom HTML popover replacing Electron's native
+   menu so it stays square and matches the rest of the chrome. Anchored by
+   toolbar.js so its top edge sits flush with the top of the ⋮ button. */
+#app-menu {
+  position: fixed;
+  top: 0;
+  left: 0;
+  background: #ffffff;
+  border: 1px solid #b8b8b8;
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+  padding: 0;
+  min-width: 220px;
+  z-index: 100;
+  -webkit-app-region: no-drag;
+  user-select: none;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#app-menu[hidden] { display: none; }
+
+#app-menu .item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 36px;
+  padding: 0 14px;
+  background: transparent;
+  color: #222;
+  border: none;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#app-menu .item:hover:not(:disabled) { background: #d8d8d8; }
+#app-menu .item:disabled {
+  color: #a0a0a0;
+  cursor: default;
+  background: transparent;
+}
+
+#app-menu .item .accel {
+  color: #888;
+  font-size: 12px;
+  margin-left: 24px;
+}
+
+#app-menu .separator {
+  height: 1px;
+  background: #e6e6e6;
+  margin: 4px 0;
+}
 
 /* macOS: native traffic lights sit at the top-left of the window via
    titleBarStyle: 'hiddenInset', so HTML window controls are hidden and
    the toolbar is padded to clear the lights. */
 .platform-darwin #wm-buttons { display: none; }
 .platform-darwin #toolbar { padding-left: 80px; }
+
+/* HTML5 fullscreen (YouTube, etc.) — main has put the host BrowserWindow
+   into real OS fullscreen; we just need to get out of the way so the
+   webview fills it. The 1px chrome border is also hidden so the video
+   sits flush to the monitor edges. */
+body.html-fullscreen #toolbar { display: none; }
+body.html-fullscreen #app { border: none; }
 
