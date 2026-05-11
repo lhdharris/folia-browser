@@ -5,6 +5,16 @@ All notable changes to Folia Browser are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2]
+
+### Changed
+- Save page as PDF now uses the same download ring as regular downloads: a
+  progress ring appears in the toolbar while the PDF is being generated and
+  written, turns green with a checkmark when it's saved, and opens the
+  containing folder (with the file highlighted) on click. Replaces the
+  silent native save dialog as the default — the dialog is still used when
+  Settings → "Ask where to save each file" is enabled.
+
 ## [1.1.0] — Unreleased
 
 ### Added

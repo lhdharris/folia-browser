@@ -718,18 +718,39 @@ ipcMain.handle('get-window-hue', (e) => {
 });
 
 async function savePageAsPdf(win, guest) {
+  const send = (payload) => {
+    if (!win.isDestroyed()) win.webContents.send('download-event', payload);
+  };
+  const id = ++downloadCounter;
   try {
-    const pdf = await guest.printToPDF({ printBackground: true });
     const title = guest.getTitle() || 'page';
     const safe = title.replace(/[^a-z0-9 _\-]/gi, '').trim().slice(0, 80) || 'page';
-    const res = await dialog.showSaveDialog(win, {
-      defaultPath: path.join(effectiveDownloadDir(), `${safe}.pdf`),
-      filters: [{ name: 'PDF', extensions: ['pdf'] }],
-      title: 'Save page as PDF',
-    });
-    if (res.canceled || !res.filePath) return;
-    await fs.promises.writeFile(res.filePath, pdf);
+    const filename = `${safe}.pdf`;
+
+    let savePath;
+    if (settings.askDownloadPath) {
+      const res = await dialog.showSaveDialog(win, {
+        defaultPath: path.join(effectiveDownloadDir(), filename),
+        filters: [{ name: 'PDF', extensions: ['pdf'] }],
+        title: 'Save page as PDF',
+      });
+      if (res.canceled || !res.filePath) return;
+      savePath = res.filePath;
+    } else {
+      savePath = uniqueDownloadPath(effectiveDownloadDir(), filename);
+      try { fs.mkdirSync(path.dirname(savePath), { recursive: true }); } catch {}
+    }
+
+    // Ring goes visible immediately so the user has feedback during printToPDF,
+    // which can take a few seconds on long pages. printToPDF doesn't surface
+    // progress, so we just leave the ring at 0% until the write completes.
+    send({ kind: 'started', id, filename: path.basename(savePath) });
+
+    const pdf = await guest.printToPDF({ printBackground: true });
+    await fs.promises.writeFile(savePath, pdf);
+    send({ kind: 'done', id, filename: path.basename(savePath), savePath });
   } catch (err) {
+    send({ kind: 'failed', id, state: 'failed' });
     dialog.showErrorBox('Save as PDF failed', err.message || String(err));
   }
 }
