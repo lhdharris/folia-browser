@@ -51,6 +51,11 @@ function init() {
     else window.addEventListener('load', () => urlBar.focus());
     return;
   }
+  // Window opened with a URL (target=_blank, OS file association, second-
+  // instance with argv, etc.): drop a static label into the toolbar so the
+  // window is identifiable at a glance. Same slot the post-submit label
+  // uses, just placed up-front instead of swapped in after URL-bar Enter.
+  placeStaticLabel(labelTextForUrl(initialUrl));
   startLoad(initialUrl);
 }
 
@@ -65,10 +70,15 @@ function init() {
 // index.html) so every window shares one cookie jar — sign in once to
 // Google/whatever and every other window picks up the session, including
 // cross-site OAuth (claude.ai → accounts.google.com → back). The hostname
-// extracted here is just for the per-window hue.
+// extracted here is just for the per-window hue — file:// URLs report no
+// hostname, so they share the `local-file` slot (still non-empty, so the
+// window gets registered and tinted alongside http windows).
 function startLoad(url) {
   let hostname = 'default';
-  try { hostname = new URL(url).hostname; } catch {}
+  try {
+    const u = new URL(url);
+    hostname = u.hostname || (u.protocol === 'file:' ? 'local-file' : 'default');
+  } catch {}
   window.wm.notifyNavigated(hostname);
 
   const fire = () => webview.setAttribute('src', url);
@@ -77,6 +87,31 @@ function startLoad(url) {
   } else {
     window.addEventListener('load', () => setTimeout(fire, 50));
   }
+}
+
+// Static label for windows that opened with a URL (no URL bar to type into).
+// `file://` → file basename; `http(s)://` → bare hostname. Mirrors the
+// post-submit label produced by actionLabelText().
+function labelTextForUrl(url) {
+  try {
+    const u = new URL(url);
+    if (u.protocol === 'file:') {
+      const p = decodeURIComponent(u.pathname);
+      return p.split('/').filter(Boolean).pop() || p;
+    }
+    return u.hostname.replace(/^www\./i, '').toLowerCase();
+  } catch {
+    return url;
+  }
+}
+
+function placeStaticLabel(text) {
+  const parent = urlBar.parentElement;
+  if (urlBar.isConnected) urlBar.remove();
+  const label = document.createElement('span');
+  label.id = 'action-label';
+  label.textContent = text;
+  parent.appendChild(label);
 }
 
 // Build the static action label that replaces the URL bar after the user
@@ -137,6 +172,16 @@ init();
 // recompute its viewport in case the webview element resized after attach.
 webview.addEventListener('dom-ready', () => {
   webview.executeJavaScript('window.dispatchEvent(new Event("resize"))').catch(() => {});
+});
+
+// Mirror the guest page's <title> into document.title so the OS-level window
+// title (Alt-Tab, GNOME activities, taskbar) shows what's actually loaded
+// instead of every Folia window saying "Folia Browser". Electron's BrowserWindow
+// auto-syncs from document.title via its own page-title-updated event. Skip
+// empties — keep the static "Folia Browser" fallback from index.html.
+webview.addEventListener('page-title-updated', (e) => {
+  const t = (e.title || '').trim();
+  if (t) document.title = `${t} — Folia Browser`;
 });
 
 // Navigation

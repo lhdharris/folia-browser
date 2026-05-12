@@ -5,6 +5,30 @@ All notable changes to Folia Browser are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.5]
+
+### Fixed
+- Windows opened from the OS file association (double-clicking an `.html`
+  file) and other windows that start with a URL (target=`_blank`, "Open in
+  new window") now show a static label in the toolbar — file basename for
+  `file://`, bare hostname for `http(s)://` — so the window is identifiable
+  at a glance. Previously the toolbar slot just sat empty for any
+  non-blank window.
+- File-URL windows now participate in pastel-hue assignment. The renderer
+  was passing the empty `URL.hostname` of a `file://` URL through to the
+  main process, which rejected empty hostnames and skipped registration —
+  so a `file://` window plus an `http://` window collapsed to the
+  single-window case and both stayed grey. They share a synthetic
+  `local-file` slot now, get a hue, and stay distinct from http windows.
+
+### Changed
+- OS-level window title (Alt-Tab, GNOME activities, taskbar) now reads
+  `<page title> — Folia Browser` instead of every window flatly saying
+  "Folia Browser". The renderer listens to the webview's
+  `page-title-updated` and writes to `document.title`; Electron's
+  BrowserWindow auto-syncs from there. Empty page titles fall back to the
+  static "Folia Browser" from `renderer/index.html`.
+
 ## [1.1.4]
 
 ### Added
