@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('wm', {
   toggleMaximize:  () => ipcRenderer.send('wm-maximize'),
   getSettings:     () => ipcRenderer.invoke('get-settings'),
   saveSettings:    (s) => ipcRenderer.send('settings-save', s),
+  getAppVersion:   () => ipcRenderer.invoke('get-app-version'),
   resolveUrl:      (input) => ipcRenderer.invoke('resolve-url', input),
   deleteCookies:   () => ipcRenderer.invoke('delete-cookies'),
   deleteCache:     () => ipcRenderer.invoke('delete-cache'),

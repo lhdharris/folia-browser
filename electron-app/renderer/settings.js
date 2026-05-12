@@ -17,6 +17,9 @@ function renderDownloadPath(s) {
 }
 
 async function init() {
+  window.wm.getAppVersion().then((v) => {
+    document.getElementById('version-number').textContent = v || '';
+  });
   defaultDownloadPath = await window.wm.getDefaultDownloadPath();
   const s = await window.wm.getSettings();
   const engine = s.searchEngine || 'ecosia';

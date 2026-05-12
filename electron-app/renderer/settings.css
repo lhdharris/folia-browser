@@ -71,6 +71,26 @@ main {
   gap: 22px;
 }
 
+#version-banner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0 6px;
+}
+
+#version-banner img {
+  width: 56px;
+  height: 56px;
+  display: block;
+}
+
+#version-banner .version-text {
+  font-size: 14px;
+  color: #555;
+  letter-spacing: 0.01em;
+}
+
 section {
   display: flex;
   flex-direction: column;

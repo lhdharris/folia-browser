@@ -5,6 +5,13 @@ All notable changes to Folia Browser are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.4]
+
+### Added
+- Settings page shows the running version at the top, centred under an
+  instance of the Folia icon. Version string comes from `app.getVersion()`
+  via a new `get-app-version` IPC handler.
+
 ## [1.1.3]
 
 ### Added

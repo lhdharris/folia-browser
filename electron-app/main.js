@@ -691,6 +691,7 @@ ipcMain.on('wm-maximize', (e) => {
 
 // IPC: settings
 ipcMain.handle('get-settings', () => settings);
+ipcMain.handle('get-app-version', () => app.getVersion());
 ipcMain.on('settings-save', (_e, updated) => {
   const prev = settings;
   settings = { ...settings, ...updated };
