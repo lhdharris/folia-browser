@@ -53,7 +53,18 @@ A `.desktop` entry registers Folia as a candidate `http`/`https` handler.
 
 ### macOS
 
-The app is unsigned. The first time you launch it, right-click → **Open** to bypass Gatekeeper.
+The app is unsigned, so the first time you open the `.dmg` macOS may say Folia Browser **"is damaged and can't be opened."** It isn't — that's Gatekeeper's misleading wording for any unsigned app it doesn't recognise. To launch it:
+
+1. Drag **Folia Browser.app** into `/Applications`.
+2. In Terminal, run:
+
+   ```bash
+   xattr -cr "/Applications/Folia Browser.app"
+   ```
+
+3. Open it normally from Launchpad or Finder.
+
+That strips the `com.apple.quarantine` flag your browser attached when the `.dmg` was downloaded; once it's gone, the app launches as expected. You only need to do this once.
 
 ### Windows
 
