@@ -1,6 +1,14 @@
 const { app, BrowserWindow, Menu, ipcMain, session, dialog, shell, clipboard, components, screen, desktopCapturer, webContents } = require('electron');
 const path = require('path');
 const fs   = require('fs');
+const { pathToFileURL } = require('url');
+const { checkForUpdates } = require('./updater');
+
+// macOS menu bar shows the app name in the bold leftmost menu ("About …",
+// "Hide …", "Quit …"). Electron derives that from app.getName(), which in dev
+// falls back to package.json's `name` ("folia-browser"). Force the pretty
+// display name so dev and packaged builds match.
+app.setName('Folia Browser');
 
 // Widevine is provided by Castlabs Electron-for-Content (the `electron` dep
 // is their VMP-signed fork, see DRM_SETUP.md). The CDM is installed by
@@ -221,7 +229,17 @@ function isLocalHost(host) {
 
 function resolveUrl(arg) {
   if (!arg || arg.startsWith('-')) return searchUrl(arg || '');
+  if (arg.startsWith('file://')) return arg;
   if (arg.startsWith('http://') || arg.startsWith('https://')) return arg;
+  // OS file-association handoff: when the user clicks an .html file the OS
+  // hands us an absolute filesystem path, not a URL. Only treat it as a file
+  // if it actually exists — otherwise typos like "folder.name" would match
+  // path.isAbsolute on POSIX and get forced to file:// instead of searching.
+  if (path.isAbsolute(arg)) {
+    try {
+      if (fs.statSync(arg).isFile()) return pathToFileURL(arg).href;
+    } catch {}
+  }
   if (!arg.includes(' ') && arg.includes('.')) {
     const host = arg.split('/')[0];
     return (isLocalHost(host) ? 'http://' : 'https://') + arg;
@@ -255,11 +273,7 @@ function createWindow(url, opener) {
     width:  cascade ? cascade.width  : 1200,
     height: cascade ? cascade.height : 800,
     ...(cascade ? { x: cascade.x, y: cascade.y } : {}),
-    // macOS hosts the close/min/max as native traffic lights inset into the
-    // toolbar; other OSes use HTML buttons inside #wm-buttons.
-    ...(process.platform === 'darwin'
-      ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 14, y: 14 } }
-      : { frame: false }),
+    frame: false,
     backgroundColor: '#ffffff',
     resizable: true,
     autoHideMenuBar: true,
@@ -603,6 +617,16 @@ async function eachSession() {
 
 let downloadCounter = 0;
 
+// One-shot owner hint for downloads started from the main process (the
+// updater, currently). will-download fires with `wc` set to the session's
+// own webContents, not a guest, so findOwningWindow returns null. The
+// updater calls setPendingDownloadOwner(win) right before downloadURL so
+// the next will-download event can attribute progress to that window's UI.
+let pendingDownloadOwner = null;
+function setPendingDownloadOwner(win) {
+  pendingDownloadOwner = win && !win.isDestroyed() ? win : null;
+}
+
 function attachDownloadHandler(sess) {
   if (sess.__foliaDlAttached) return;
   sess.__foliaDlAttached = true;
@@ -616,7 +640,11 @@ function attachDownloadHandler(sess) {
     // owner has already closed by the time an event fires (e.g. download
     // started, user closed the window, then it finished), the event is just
     // dropped — the file still saves, no UI gets updated.
-    const ownerWin = findOwningWindow(wc);
+    let ownerWin = findOwningWindow(wc);
+    if (!ownerWin && pendingDownloadOwner && !pendingDownloadOwner.isDestroyed()) {
+      ownerWin = pendingDownloadOwner;
+      pendingDownloadOwner = null;
+    }
     const sendToOwner = (payload) => {
       if (ownerWin && !ownerWin.isDestroyed()) {
         ownerWin.webContents.send('download-event', payload);
@@ -878,6 +906,13 @@ if (!gotLock) {
       const urlArg = pickUrlArg(process.argv, argvStart);
       createWindow(urlArg ? resolveUrl(urlArg) : null);
     }
+
+    // GitHub Releases auto-updater. Skipped in dev (the updater checks
+    // app.isPackaged itself). Delayed a few seconds so the first window can
+    // finish laying out before a modal native dialog might pop on top of it.
+    setTimeout(() => {
+      checkForUpdates({ onStartDownload: setPendingDownloadOwner }).catch(() => {});
+    }, 3000);
   });
 
   app.on('window-all-closed', () => {

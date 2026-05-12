@@ -5,6 +5,22 @@ All notable changes to Folia Browser are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.3]
+
+### Added
+- GitHub-tracking auto-updater. On launch the app hits
+  `https://api.github.com/repos/lhdharris/folia-browser/releases/latest`,
+  compares the tag to `app.getVersion()`, and if there is something newer
+  shows a native "Update available" dialog with Download / Later. Picking
+  Download streams the matching installer (`.rpm`, `.deb`, `.exe`, or
+  `.dmg`, auto-selected from the platform — Linux uses
+  `/etc/os-release` ID/ID_LIKE to pick rpm vs deb) into the user's
+  downloads folder, surfaced through the same toolbar download-ring UI
+  webview downloads use. The downloaded installer is run by the user
+  manually; the app does not auto-install. Skipped in dev
+  (`!app.isPackaged`) and on platforms with no matching asset. See
+  `electron-app/updater.js`.
+
 ## [1.1.2]
 
 ### Changed

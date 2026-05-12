@@ -437,12 +437,6 @@ button:disabled {
   margin: 4px 0;
 }
 
-/* macOS: native traffic lights sit at the top-left of the window via
-   titleBarStyle: 'hiddenInset', so HTML window controls are hidden and
-   the toolbar is padded to clear the lights. */
-.platform-darwin #wm-buttons { display: none; }
-.platform-darwin #toolbar { padding-left: 80px; }
-
 /* HTML5 fullscreen (YouTube, etc.) — main has put the host BrowserWindow
    into real OS fullscreen; we just need to get out of the way so the
    webview fills it. The 1px chrome border is also hidden so the video
