@@ -9,7 +9,7 @@
   },
   "homepage": "https://github.com/lhdharris/folia-browser",
   "scripts": {
-    "start": "electron .",
+    "start": "electron . --user-data-dir=\"$HOME/.config/folia-browser-dev\"",
     "build": "electron-builder",
     "build:linux": "electron-builder --linux rpm deb",
     "build:mac": "electron-builder --mac dmg",
