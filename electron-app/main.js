@@ -103,6 +103,15 @@ function findOwningWindow(guestWebContents) {
   return null;
 }
 
+// "Only stickies are open" — used by the launch paths (cold start, macOS
+// activate) to decide whether activating the app needs a fresh blank window.
+// A parked sticky can't load a URL until it's restored, so without this check
+// the user can have the app running and no way to actually browse.
+function onlyStickyWindowsOpen() {
+  const wins = BrowserWindow.getAllWindows();
+  return wins.length > 0 && wins.every((w) => w._sticky);
+}
+
 // Per-window pastel hue assignment. Each window with a known hostname gets a
 // slot in `windowHues`; the renderer paints its toolbar with `hsl(hue, …)`.
 // Assignment is sticky — once a window has a hue, it keeps it until close —
@@ -164,7 +173,12 @@ function unpinStickyOnTop(win) {
 //   - Linux/Windows: the WM reads min == max as "fixed-size" and (on
 //     Wayland especially) suppresses dblclick-to-maximize at the compositor.
 //     setResizable(false) doesn't carry the same signal — Mutter still
-//     fires the maximize-state-flag on dblclick — so min/max is the lever.
+//     fires the maximize-state-flag on dblclick — so min/max is the lever
+//     for gesture defense. setResizable(false) is *also* applied, but for
+//     a different reason: Chromium's frameless-window code draws its own
+//     edge resize hover cursors (↔ ↕ ⤡) keyed off the resizable flag, not
+//     off the min/max constraints, so without it the cursor still implies
+//     "drag me to resize" even though min == max blocks the actual resize.
 //   - macOS: setMinimumSize/setMaximumSize would clamp the size correctly,
 //     but Cocoa's NSWindow.zoom() (the title-bar dblclick gesture)
 //     computes a "standard frame" by clamping the screen visibleFrame
@@ -185,6 +199,7 @@ function lockStickySize(win, w, h) {
   } else {
     win.setMinimumSize(w, h);
     win.setMaximumSize(w, h);
+    win.setResizable(false);
   }
 }
 
@@ -195,6 +210,7 @@ function unlockStickySize(win) {
   } else {
     win.setMinimumSize(0, 0);
     win.setMaximumSize(0, 0);
+    win.setResizable(true);
   }
 }
 
@@ -1341,9 +1357,13 @@ if (!gotLock) {
     createWindow(urlArg ? resolveUrl(urlArg) : null);
   });
 
-  // macOS: dock-icon click with no windows open should re-create one.
+  // macOS: dock-icon click with no real windows should re-create one. Parked
+  // stickies don't count — a sticky can't browse, so clicking the dock when
+  // only stickies are open still needs a fresh blank window.
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow(null);
+    if (BrowserWindow.getAllWindows().length === 0 || onlyStickyWindowsOpen()) {
+      createWindow(null);
+    }
   });
 
   // Attach download handler to every session — default and per-site partitions.
@@ -1395,14 +1415,10 @@ if (!gotLock) {
       // argv[1] is main.js in dev, first user arg in packaged AppImage
       const argvStart = app.isPackaged ? 1 : 2;
       const urlArg = pickUrlArg(process.argv, argvStart);
-      // Skip the empty default window when stickies have already been
-      // restored — launching with stickies should bring just the stickies
-      // back, not pile on a blank window every time.
-      if (urlArg) {
-        createWindow(resolveUrl(urlArg));
-      } else if (savedStickies.length === 0) {
-        createWindow(null);
-      }
+      // Always open a browse-ready window on launch. Restored stickies stay
+      // parked alongside it — a sticky can't load a URL until restored, so
+      // surfacing only stickies leaves the user with nothing to browse from.
+      createWindow(urlArg ? resolveUrl(urlArg) : null);
     }
 
     // GitHub Releases auto-updater. Skipped in dev (the updater checks
