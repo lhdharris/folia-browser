@@ -114,11 +114,46 @@ html, body {
   max-width: 600px;
   opacity: 1;
   transition: opacity 0.22s ease;
+  /* Opt out of the toolbar's drag region so click events reach the
+     renderer — without this, mousedowns over the label get treated as
+     window-drag starts by the WM and no click fires. */
+  -webkit-app-region: no-drag;
+  cursor: default;
 }
 
 #action-label.entering {
   opacity: 0;
 }
+
+/* Head-shake "no" feedback when the user clicks the action label. The
+   label looks like a URL bar but isn't editable — Folia is tabless, so
+   navigation happens by opening a new window. The shake says "can't
+   type here", and after a few clicks #menu starts flashing green to
+   point at the way out. */
+@keyframes label-shake-no {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-5px); }
+  40%, 80% { transform: translateX(5px); }
+}
+#action-label.shake-no { animation: label-shake-no 450ms ease-in-out; }
+
+/* Pastel green swell on the ⋮ menu button and the "New window" menu
+   item. Triggered after the third URL-bar click as a gentle hint —
+   slow ease-in-out so it reads as a "breath" rather than a blink.
+   0%/100% to transparent briefly wipes any hover background, which is
+   fine here because the user's cursor is on the action label when the
+   menu pulses, and on the menu button when the new-window item pulses. */
+@keyframes button-flash-green {
+  0%, 100% { background: transparent; color: #444; }
+  50%      { background: #c8e6c9; color: #2a5d34; }
+}
+#menu.flash-green { animation: button-flash-green 1200ms ease-in-out; }
+
+@keyframes item-flash-green {
+  0%, 100% { background: transparent; color: #222; }
+  50%      { background: #c8e6c9; color: #2a5d34; }
+}
+#app-menu .item.flash-green { animation: item-flash-green 1300ms ease-in-out; }
 
 /* Wrapper provides explicit known dimensions to the webview.
    This is the canonical Electron <webview> sizing pattern. */
@@ -378,9 +413,10 @@ button:disabled {
 }
 #app-menu-backdrop[hidden] { display: none; }
 
-/* Toolbar ⋮ dropdown menu. Custom HTML popover replacing Electron's native
-   menu so it stays square and matches the rest of the chrome. Anchored by
-   toolbar.js so its top edge sits flush with the top of the ⋮ button. */
+/* Toolbar ⋮ dropdown menu. Custom HTML popover replacing Electron's
+   native menu so it stays square and matches the rest of the chrome.
+   Anchored by toolbar.js so its top edge sits flush with the top of the
+   ⋮ button. */
 #app-menu {
   position: fixed;
   top: 0;
@@ -443,4 +479,170 @@ button:disabled {
    sits flush to the monitor edges. */
 body.html-fullscreen #toolbar { display: none; }
 body.html-fullscreen #app { border: none; }
+
+/* Sticky-note minimize. While body.sticky-mode is set, the OS window has
+   been animated down to ~280×200 in main and the toolbar+webview are
+   hidden so the overlay can fill the whole shrunken window. Webview is
+   display:none (not unloaded) — audio/video keep playing, no reload on
+   restore. */
+body.sticky-mode #toolbar,
+body.sticky-mode #webview-wrap { display: none; }
+body.sticky-mode #app { border: none; }
+
+/* All sticky internal sizing is driven by --sticky-zoom (set on :root by
+   toolbar.js from settings.zoom). Default 1 = base sizes; 1.5 = 50% bigger
+   text/padding/buttons. Window dimensions are scaled in main to match. */
+
+#sticky-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  padding: calc(14px * var(--sticky-zoom, 1)) calc(16px * var(--sticky-zoom, 1));
+  /* Background follows the same --toolbar-bg variable that paints the
+     toolbar in normal mode — pastel hue when multi-window, locked
+     #FFFFE0 when shrunk-while-alone, fallback yellow if the window
+     somehow has no colour set. */
+  background: var(--toolbar-bg, #FFFFE0);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+  cursor: grab;
+  user-select: none;
+  z-index: 50;
+  /* Drag region: routes the move through the compositor's xdg_toplevel.move
+     on Wayland, which is the only way to reposition a window there (clients
+     can't call setBounds({x,y,…}) on Wayland — the protocol forbids it).
+     Side effect: the WM also enables its titlebar gestures (dblclick→
+     maximize, drag-to-top→snap-maximize). The `maximize` interceptor in
+     main.js catches those and snaps the sticky back to its stickyBounds. */
+  -webkit-app-region: drag;
+}
+
+#sticky-overlay[hidden] { display: none; }
+
+#sticky-header {
+  display: flex;
+  align-items: flex-start;
+  gap: calc(7px * var(--sticky-zoom, 1));
+  margin-bottom: calc(10px * var(--sticky-zoom, 1));
+  /* No padding-right reservation: title gets the full width, and the
+     hover-revealed action icons fade in *over* the title's right portion
+     (they're absolutely positioned). */
+}
+
+#sticky-title {
+  font-weight: 700;
+  font-size: calc(18px * var(--sticky-zoom, 1));
+  color: #2a2a2a;
+  line-height: 1.3;
+  flex: 1 1 auto;
+  /* Long search queries shouldn't push the comment off the bottom. */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Speaker glyph to the left of the title. Hidden by default; the renderer
+   adds .audible when the webview's wvContents reports audio-state-changed
+   with audible=true. */
+#sticky-audio-icon {
+  flex: 0 0 auto;
+  display: none;
+  align-items: center;
+  margin-top: calc(2px * var(--sticky-zoom, 1));
+  color: #2a2a2a;
+}
+#sticky-audio-icon.audible { display: inline-flex; }
+#sticky-audio-icon svg {
+  width:  calc(14px * var(--sticky-zoom, 1));
+  height: calc(14px * var(--sticky-zoom, 1));
+}
+
+#sticky-comment {
+  font-style: italic;
+  font-size: calc(15px * var(--sticky-zoom, 1));
+  color: #4a4a4a;
+  line-height: 1.4;
+  flex: 1 1 auto;
+  outline: none;
+  cursor: text;
+  overflow-y: auto;
+  /* Stable starting position for the cursor when first focused. */
+  min-height: 1.4em;
+  /* The overlay is a WM drag region; the comment must opt back out so
+     mousedown actually focuses it for typing instead of starting a drag. */
+  -webkit-app-region: no-drag;
+}
+
+#sticky-comment:empty::before {
+  content: attr(data-placeholder);
+  color: #999;
+  pointer-events: none;
+}
+
+/* Hover-revealed action array in the top-right corner — same idea as the
+   wm-buttons trio in the toolbar, but for sticky-mode. Each icon is a
+   no-drag click target; the empty space around them still drags the
+   window. The cluster reads as one faded panel rather than three boxed
+   buttons: a single linear-gradient backdrop spans the row, solid on
+   the right (sticky's own colour, so title text behind the icons is
+   hidden) and fading to transparent on the left so the panel blends
+   into the title area instead of cutting it with a hard edge. */
+#sticky-actions {
+  position: absolute;
+  top: calc(4px * var(--sticky-zoom, 1));
+  right: calc(4px * var(--sticky-zoom, 1));
+  display: flex;
+  gap: calc(2px * var(--sticky-zoom, 1));
+  padding:
+    calc(3px * var(--sticky-zoom, 1))
+    calc(4px * var(--sticky-zoom, 1))
+    calc(3px * var(--sticky-zoom, 1))
+    calc(24px * var(--sticky-zoom, 1));
+  border-radius: calc(8px * var(--sticky-zoom, 1));
+  background: linear-gradient(
+    to right,
+    transparent 0,
+    var(--toolbar-bg, #FFFFE0) calc(22px * var(--sticky-zoom, 1)),
+    var(--toolbar-bg, #FFFFE0) 100%
+  );
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  /* When invisible, don't intercept clicks meant for the title that's
+     now sitting underneath us (the title fills the full width). */
+  pointer-events: none;
+}
+
+#sticky-overlay:hover #sticky-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.sticky-action-btn {
+  width:  calc(24px * var(--sticky-zoom, 1));
+  height: calc(24px * var(--sticky-zoom, 1));
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  /* No per-button halo — the parent #sticky-actions provides a single
+     faded backdrop that hides title text behind the whole cluster. */
+  color: #2a2a2a;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Opt out of the overlay's drag region so the buttons receive clicks
+     instead of starting a window move. */
+  -webkit-app-region: no-drag;
+}
+
+.sticky-action-btn:hover { background: rgba(0, 0, 0, 0.08); }
+.sticky-action-btn:active { background: rgba(0, 0, 0, 0.14); }
+#sticky-x:hover { background: #e81123; color: white; }
+
+.sticky-action-btn svg {
+  width:  calc(10px * var(--sticky-zoom, 1));
+  height: calc(10px * var(--sticky-zoom, 1));
+}
+
 
