@@ -158,6 +158,46 @@ function unpinStickyOnTop(win) {
   try { win.setVisibleOnAllWorkspaces(false); } catch {}
 }
 
+// Fix the sticky's size so neither the user nor the WM's title-bar gesture
+// can resize it. Two platform paths because the gestures we're defending
+// against live at different layers:
+//   - Linux/Windows: the WM reads min == max as "fixed-size" and (on
+//     Wayland especially) suppresses dblclick-to-maximize at the compositor.
+//     setResizable(false) doesn't carry the same signal — Mutter still
+//     fires the maximize-state-flag on dblclick — so min/max is the lever.
+//   - macOS: setMinimumSize/setMaximumSize would clamp the size correctly,
+//     but Cocoa's NSWindow.zoom() (the title-bar dblclick gesture)
+//     computes a "standard frame" by clamping the screen visibleFrame
+//     to contentMaxSize and snapping the origin to the visibleFrame's
+//     bottom-left (macOS coords are bottom-left origin). Result: dblclick
+//     teleports the sticky to the bottom-left corner of the screen at
+//     sticky size and "maximize" doesn't fire reliably, so the post-hoc
+//     restore listener never runs. setResizable(false) is documented to
+//     make NSWindow.zoom a no-op (Apple: "If a window's style mask
+//     doesn't include NSWindowStyleMaskResizable, the title bar isn't
+//     double-clickable and zoom isn't called"), which disables the
+//     gesture at the source. Programmatic setBounds still works, so the
+//     shrink/restore animations are unaffected.
+function lockStickySize(win, w, h) {
+  if (win.isDestroyed()) return;
+  if (process.platform === 'darwin') {
+    win.setResizable(false);
+  } else {
+    win.setMinimumSize(w, h);
+    win.setMaximumSize(w, h);
+  }
+}
+
+function unlockStickySize(win) {
+  if (win.isDestroyed()) return;
+  if (process.platform === 'darwin') {
+    win.setResizable(true);
+  } else {
+    win.setMinimumSize(0, 0);
+    win.setMaximumSize(0, 0);
+  }
+}
+
 function hostnameHue(hostname) {
   let h = 5381;
   for (let i = 0; i < hostname.length; i++) {
@@ -516,8 +556,7 @@ function createWindow(url, opener, options = {}) {
       recomputeHues();
     }
     pinStickyOnTop(win);
-    win.setMinimumSize(initialBounds.width, initialBounds.height);
-    win.setMaximumSize(initialBounds.width, initialBounds.height);
+    lockStickySize(win, initialBounds.width, initialBounds.height);
   }
 
   // Empty hash → renderer shows the search bar and waits for input. For a
@@ -1029,15 +1068,13 @@ ipcMain.handle('wm-sticky-shrink', async (e, payload = {}) => {
 
   pinStickyOnTop(win);
 
-  // Lock the size after the animation. This tells the compositor the
-  // window is fixed-size, which on Wayland is what actually prevents
-  // dblclick-to-maximize from triggering. (The `maximize` JS listener
-  // alone wasn't enough — `unmaximize()+setBounds(stickyBounds)` raced
-  // the Wayland state transition and the window shaved pixels each
-  // cycle, the "shrinks to nothing on repeated dblclick" bug.)
-  // Programmatic setBounds in animations later re-unlocks first.
-  win.setMinimumSize(stickyBounds.width, stickyBounds.height);
-  win.setMaximumSize(stickyBounds.width, stickyBounds.height);
+  // Lock the size after the animation so neither the user nor the WM's
+  // dblclick-to-maximize gesture can resize the sticky. lockStickySize
+  // picks the right lever per platform — see its docs for the full
+  // pathology (Wayland needs min==max as a fixed-size hint to the
+  // compositor; macOS needs setResizable(false) so Cocoa's zoom: doesn't
+  // teleport the sticky to the screen's bottom-left corner).
+  lockStickySize(win, stickyBounds.width, stickyBounds.height);
 
   scheduleSaveStickies();
 });
@@ -1054,10 +1091,10 @@ ipcMain.handle('wm-sticky-restore', async (e) => {
   win._sticky = null;
   unpinStickyOnTop(win);
 
-  // Unlock the size before animating back up — the shrink handler clamped
-  // min/max to the sticky size to disable dblclick-maximize.
-  win.setMinimumSize(0, 0);
-  win.setMaximumSize(0, 0);
+  // Unlock the size before animating back up — the shrink handler locked
+  // it (min/max on Linux/Windows; resizable=false on macOS) to disable
+  // dblclick-maximize.
+  unlockStickySize(win);
 
   // Restore-to-grey: if this window is alone (no siblings), drop the
   // sticky-yellow lock so the toolbar reverts to default. If there are
@@ -1132,12 +1169,10 @@ ipcMain.on('settings-save', (_e, updated) => {
       if (w._sticky && !w.isDestroyed()) {
         const newSticky = stickyBoundsFor(w.getBounds());
         w._sticky.stickyBounds = newSticky;
-        w.setMinimumSize(0, 0);
-        w.setMaximumSize(0, 0);
+        unlockStickySize(w);
         animateBounds(w, newSticky, STICKY_ANIM_MS).then(() => {
           if (w.isDestroyed() || !w._sticky) return;
-          w.setMinimumSize(newSticky.width, newSticky.height);
-          w.setMaximumSize(newSticky.width, newSticky.height);
+          lockStickySize(w, newSticky.width, newSticky.height);
         });
       }
     }
