@@ -18,21 +18,20 @@ document.body.classList.add('platform-' + (window.wm?.platform || 'unknown'));
 const initialUrl = decodeURIComponent(location.hash.slice(1));
 const isBlank    = !initialUrl;
 
-// Pastel hue: main process assigns this window a hue (or null) based on how
-// many other windows are open and what hues they already have. A single
-// window stays default grey; 2+ get distinct pastels spaced around the wheel
-// so "the blue one" is identifiable at a glance. Sticky — once assigned, a
-// window keeps its hue for its lifetime.
-function applyToolbarHue(hue) {
-  if (typeof hue === 'number') {
-    document.documentElement.style.setProperty('--toolbar-bg', `hsl(${hue}, 50%, 90%)`);
+// Per-window colour: main computes a CSS colour string and pushes it via
+// onWindowColor. Pastel hsl when assigned a hue (multi-window distinction);
+// a literal #FFFFE0 when the window has been sticky-noted while alone (the
+// colour locks for the window's lifetime). null = default grey.
+function applyToolbarColor(color) {
+  if (typeof color === 'string') {
+    document.documentElement.style.setProperty('--toolbar-bg', color);
   } else {
     document.documentElement.style.removeProperty('--toolbar-bg');
   }
 }
 
-window.wm.getWindowHue().then(applyToolbarHue);
-window.wm.onHueChanged(applyToolbarHue);
+window.wm.getWindowColor().then(applyToolbarColor);
+window.wm.onWindowColor(applyToolbarColor);
 
 // HTML5 fullscreen: hide the toolbar so the guest can fill the whole window
 // (which main has just driven into real OS fullscreen). Restoring is just
@@ -41,7 +40,37 @@ window.wm.onHtmlFullscreen((isFs) => {
   document.body.classList.toggle('html-fullscreen', isFs);
 });
 
-function init() {
+// Action label state — what the toolbar's static label says and how it
+// got there. Exposed module-level so the sticky-note minimize can render
+// "Visited ctvnews.ca" / "Searched for 'foo'". Set once per window
+// lifetime (search-vs-visit can't change after URL-bar submission, and
+// URL-opened windows are always visits).
+let actionVerb  = null;  // 'Visited' | 'Searched for' | null
+let actionLabel = null;  // hostname / "'query'" — same string used by #action-label
+// URL the webview is currently sitting on. Captured at startLoad time and
+// updated on did-navigate(-in-page); read at sticky-shrink time so main can
+// persist what URL to reload on lazy-restore.
+let currentLoadedUrl = null;
+
+async function init() {
+  // Sticky-note persistence: if main reports this is a lazy-restored
+  // sticky, paint the overlay from saved state and skip loading any URL.
+  // The webview stays src-less until the user maximises and the deferred
+  // URL kicks in via restoreFromSticky's return value.
+  const initState = await window.wm.getInitState();
+  if (initState?.lazy) {
+    actionVerb  = initState.verb || null;
+    actionLabel = initState.label || null;
+    currentLoadedUrl = initState.url || null;
+    if (actionLabel) placeStaticLabel(actionLabel);
+    enableStickyButton();
+    stickyTitle.textContent = composeStickyTitle();
+    stickyComment.textContent = initState.comment || '';
+    stickyOverlay.hidden = false;
+    document.body.classList.add('sticky-mode');
+    return;
+  }
+
   if (isBlank) {
     // Blank window: show the URL bar and wait for the user to submit.
     // The webview gets its partition + src only after the user navigates,
@@ -55,7 +84,10 @@ function init() {
   // instance with argv, etc.): drop a static label into the toolbar so the
   // window is identifiable at a glance. Same slot the post-submit label
   // uses, just placed up-front instead of swapped in after URL-bar Enter.
-  placeStaticLabel(labelTextForUrl(initialUrl));
+  actionVerb = 'Visited';
+  actionLabel = labelTextForUrl(initialUrl);
+  placeStaticLabel(actionLabel);
+  enableStickyButton();
   startLoad(initialUrl);
 }
 
@@ -74,6 +106,7 @@ function init() {
 // hostname, so they share the `local-file` slot (still non-empty, so the
 // window gets registered and tinted alongside http windows).
 function startLoad(url) {
+  currentLoadedUrl = url;
   let hostname = 'default';
   try {
     const u = new URL(url);
@@ -89,9 +122,19 @@ function startLoad(url) {
   }
 }
 
+// Keep currentLoadedUrl tracking the guest's actual URL across in-page
+// navigations (SPA history pushState, link clicks). Used by sticky shrink
+// to persist what to reload on next-launch lazy-restore.
+webview.addEventListener('did-navigate', (e) => {
+  if (e.url) currentLoadedUrl = e.url;
+});
+webview.addEventListener('did-navigate-in-page', (e) => {
+  if (e.isMainFrame && e.url) currentLoadedUrl = e.url;
+});
+
 // Static label for windows that opened with a URL (no URL bar to type into).
 // `file://` → file basename; `http(s)://` → bare hostname. Mirrors the
-// post-submit label produced by actionLabelText().
+// post-submit label produced by actionLabelInfo().
 function labelTextForUrl(url) {
   try {
     const u = new URL(url);
@@ -114,11 +157,62 @@ function placeStaticLabel(text) {
   parent.appendChild(label);
 }
 
+// Folia is tabless: once a window has navigated, the address slot is a
+// static #action-label, not an editable URL bar. Clicking it does nothing
+// useful — so the click is treated as a "can I type here?" gesture and the
+// label shakes "no". After three clicks the ⋮ menu pulses green; opening
+// the menu while in that state also pulses the "New window" item, pointing
+// the user at how to actually navigate. Counter resets when the user
+// follows the hint (clicks New window from the menu).
+let urlBarShakeCount = 0;
+
+function shakeActionLabel(label) {
+  label.classList.remove('shake-no');
+  void label.offsetWidth;  // restart animation if mid-shake
+  label.classList.add('shake-no');
+  setTimeout(() => label.classList.remove('shake-no'), 500);
+}
+
+function flashMenuButtonGreen() {
+  const btn = document.getElementById('menu');
+  btn.classList.remove('flash-green');
+  void btn.offsetWidth;
+  btn.classList.add('flash-green');
+  setTimeout(() => btn.classList.remove('flash-green'), 1250);
+}
+
+function flashNewWindowItemGreen() {
+  const item = document.querySelector('#app-menu .item[data-action="new-window"]');
+  if (!item) return;
+  item.classList.remove('flash-green');
+  void item.offsetWidth;
+  item.classList.add('flash-green');
+  setTimeout(() => item.classList.remove('flash-green'), 1350);
+}
+
+// Event delegation: #action-label is added to #drag-space dynamically
+// (either by placeStaticLabel for URL-opened windows or by the urlBar
+// Enter handler for blank windows). Listening on the parent catches both
+// paths without re-binding.
+document.getElementById('drag-space').addEventListener('click', (e) => {
+  if (!e.target.closest('#action-label')) return;
+  urlBarShakeCount++;
+  shakeActionLabel(e.target.closest('#action-label'));
+  if (urlBarShakeCount >= 3) {
+    // Sequence the flash after the shake so the user reads it as
+    // "no … → look here". 300ms is roughly mid-shake; the green pulse
+    // peaks just as the shake finishes.
+    setTimeout(flashMenuButtonGreen, 300);
+  }
+});
+
 // Build the static action label that replaces the URL bar after the user
 // commits. URLs render as the bare hostname (e.g. "github.com"); searches
 // render as the quoted query (e.g. "'why is my child crying?'"). Mirrors
 // main.js's resolveUrl() heuristic so the label matches what got loaded.
-function actionLabelText(input) {
+// Returns {verb, text}: verb is the sticky-note prefix ("Visited" /
+// "Searched for"), text is what goes into #action-label.
+function actionLabelInfo(input) {
   const trimmed = input.trim();
   const looksLikeUrl =
     /^https?:\/\//i.test(trimmed) ||
@@ -129,9 +223,9 @@ function actionLabelText(input) {
       const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : 'https://' + trimmed;
       host = new URL(withScheme).hostname.replace(/^www\./i, '');
     } catch {}
-    return host.toLowerCase();
+    return { verb: 'Visited', text: host.toLowerCase() };
   }
-  return `'${trimmed.toLowerCase()}'`;
+  return { verb: 'Searched for', text: `'${trimmed.toLowerCase()}'` };
 }
 
 urlBar.addEventListener('keydown', async (e) => {
@@ -144,7 +238,9 @@ urlBar.addEventListener('keydown', async (e) => {
   // The swap runs once (transitionend wins normally; setTimeout is a fallback).
   // Like the URL bar, the label is set once and never updates — subsequent
   // in-page navigation doesn't change it.
-  const labelText = actionLabelText(input);
+  const { verb, text } = actionLabelInfo(input);
+  actionVerb = verb;
+  actionLabel = text;
   let swapped = false;
   const swap = () => {
     if (swapped) return;
@@ -153,11 +249,12 @@ urlBar.addEventListener('keydown', async (e) => {
     if (urlBar.isConnected) urlBar.remove();
     const label = document.createElement('span');
     label.id = 'action-label';
-    label.textContent = labelText;
+    label.textContent = text;
     label.classList.add('entering');
     parent.appendChild(label);
     void label.offsetWidth;  // force reflow so the fade-in transitions
     label.classList.remove('entering');
+    enableStickyButton();
   };
   urlBar.classList.add('leaving');
   urlBar.addEventListener('transitionend', swap, { once: true });
@@ -165,8 +262,6 @@ urlBar.addEventListener('keydown', async (e) => {
 
   startLoad(resolved);
 });
-
-init();
 
 // On dom-ready (guest has been created), force the guest page to
 // recompute its viewport in case the webview element resized after attach.
@@ -228,9 +323,9 @@ webview.addEventListener('did-start-loading', progressStart);
 webview.addEventListener('did-stop-loading',  progressFinish);
 webview.addEventListener('did-fail-load',     progressFinish);
 
-// Window controls
+// Window controls. The "minimize" slot has been replaced with the sticky-
+// note shrink (handled below); only close + maximize stay as plain wm calls.
 document.getElementById('close').addEventListener('click',    () => window.wm.close());
-document.getElementById('minimize').addEventListener('click', () => window.wm.minimize());
 document.getElementById('maximize').addEventListener('click', () => window.wm.toggleMaximize());
 // Toolbar ⋮ menu — custom HTML popover. Built once in index.html; this just
 // handles open/close, item enable/disable, and dispatch to main. The
@@ -269,6 +364,11 @@ async function openAppMenu() {
   appMenuBackdrop.hidden = false;
   appMenu.hidden = false;
   positionAppMenu();
+  // If the URL-bar-click hint sequence is active (≥3 shakes on
+  // #action-label), pulse the "New window" item to complete the visual
+  // breadcrumb. Stays on every menu open until the user actually picks
+  // new-window and the counter resets.
+  if (urlBarShakeCount >= 3) flashNewWindowItemGreen();
 }
 
 // Backdrop click closes the menu. Clicks inside the webview otherwise never
@@ -286,6 +386,9 @@ appMenu.addEventListener('click', (e) => {
   if (!item || item.disabled) return;
   closeAppMenu();
   window.wm.appMenuAction(item.dataset.action);
+  // Following the green-breadcrumb resets the URL-bar-click hint on
+  // THIS window — next click on #action-label shakes from step 1 again.
+  if (item.dataset.action === 'new-window') urlBarShakeCount = 0;
 });
 
 document.addEventListener('mousedown', (e) => {
@@ -591,3 +694,151 @@ webview.addEventListener('did-navigate-in-page', (e) => {
 });
 
 window.addEventListener('resize', () => { if (!popover.hidden) positionPopover(); });
+
+// ---- Sticky-note minimize ---------------------------------------------
+// Replaces the OS-level minimize. Clicking #sticky shrinks the OS window
+// to a small on-desktop "post-it" carrying:
+//   - the action label as a bold prefix-verb-style title ("Visited X" /
+//     "Searched for 'Y'")
+//   - an italic contenteditable comment for the user to remind themselves
+//     why they parked it
+// Clicking anywhere on the sticky body (excluding the comment area and
+// the hover-only ⋮ menu) restores the window. Main owns the bounds
+// animation; renderer just toggles `body.sticky-mode`.
+
+const stickyBtn       = document.getElementById('sticky');
+const stickyOverlay   = document.getElementById('sticky-overlay');
+const stickyTitle     = document.getElementById('sticky-title');
+const stickyComment   = document.getElementById('sticky-comment');
+const stickyAudioIcon = document.getElementById('sticky-audio-icon');
+
+// Sticky size scales with the global zoom setting (settings.zoom). Setting
+// --sticky-zoom on :root drives all internal padding/font/button sizes via
+// calc(... * var(--sticky-zoom)) in style.css. Window dimensions (set in
+// main when shrinking) scale to match. Re-applied on settings-change so
+// changing zoom while a sticky is open updates it live.
+function applyStickyZoom(zoom) {
+  document.documentElement.style.setProperty('--sticky-zoom', zoom || 1);
+}
+window.wm.getSettings().then((s) => applyStickyZoom(s?.zoom));
+window.wm.onSettingsChanged((s) => applyStickyZoom(s?.zoom));
+
+// Audio indicator: speaker glyph next to the sticky title appears whenever
+// the webview reports audible=true (audio-state-changed). State persists
+// across shrink/restore so a parked sticky reflects the page's current
+// audio state immediately on shrink.
+window.wm.onAudioState((audible) => {
+  stickyAudioIcon.classList.toggle('audible', !!audible);
+});
+
+function enableStickyButton() {
+  stickyBtn.disabled = false;
+}
+
+function composeStickyTitle() {
+  if (!actionVerb || !actionLabel) return 'Untitled window';
+  return `${actionVerb} ${actionLabel}`;
+}
+
+function placeCursorAtEnd(el) {
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  range.collapse(false);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+stickyBtn.addEventListener('click', async () => {
+  if (stickyBtn.disabled) return;
+  stickyTitle.textContent = composeStickyTitle();
+  stickyOverlay.hidden = false;
+  document.body.classList.add('sticky-mode');
+  // Main animates the OS window down to STICKY_W×STICKY_H; the promise
+  // resolves once the bounds animation finishes so we focus the comment
+  // *after* the visual settles. Payload is what main persists for next-
+  // launch lazy-restore (URL to defer-load, title parts, comment text).
+  await window.wm.shrinkToSticky({
+    url:     currentLoadedUrl,
+    verb:    actionVerb,
+    label:   actionLabel,
+    comment: stickyComment.textContent || '',
+  });
+  stickyComment.focus();
+  placeCursorAtEnd(stickyComment);
+});
+
+async function restoreFromSticky() {
+  // Animate first, then drop the class — this way the sticky note grows
+  // visually with the window resize, then the chrome snaps back into
+  // view. Hiding the overlay before the animation would show a tiny
+  // squished toolbar+webview during the grow.
+  const result = await window.wm.restoreFromSticky();
+  document.body.classList.remove('sticky-mode');
+  stickyOverlay.hidden = true;
+  // Lazy-restored stickies carry a deferredUrl: the webview was created
+  // src-less so we need to startLoad now that the window is full size.
+  // Defer-loading from a still-shrunken webview triggers the
+  // layout-too-small bug guarded by startLoad's setTimeout(50ms).
+  if (result?.deferredUrl) {
+    startLoad(result.deferredUrl);
+  }
+}
+
+// Comment edits during sticky-mode: persist live (debounced) so the saved
+// snapshot tracks what the user typed without waiting for shrink/restore.
+let commentSaveTimer = null;
+stickyComment.addEventListener('input', () => {
+  clearTimeout(commentSaveTimer);
+  commentSaveTimer = setTimeout(() => {
+    window.wm.updateStickyComment(stickyComment.textContent || '');
+  }, 300);
+});
+
+// Hover-revealed action icons: +, maximize-square, ×. Each is a no-drag
+// click target so the rest of the sticky stays draggable.
+document.getElementById('sticky-new').addEventListener('click', (e) => {
+  e.stopPropagation();
+  window.wm.newWindowFromSticky();
+});
+document.getElementById('sticky-restore').addEventListener('click', (e) => {
+  e.stopPropagation();
+  restoreFromSticky();
+});
+document.getElementById('sticky-x').addEventListener('click', (e) => {
+  e.stopPropagation();
+  window.wm.close();
+});
+
+// Drag is the OS's job: `#sticky-overlay` is marked `-webkit-app-region:
+// drag` in style.css, so the compositor handles the move via
+// xdg_toplevel.move on Wayland (the only way to reposition a window there
+// — clients aren't allowed to call setBounds({x,y,…}) on Wayland). The
+// comment area and action buttons opt back out with `no-drag` so they
+// remain interactive.
+
+// Dblclick on a sticky triggers the WM's maximize gesture, which on
+// GNOME Wayland we can't cleanly suppress (all the post-hoc options
+// either drift the size or strand the window in the top-left corner —
+// see the `maximize` listener in main.js for the full pathology).
+// Instead main re-routes the gesture through this signal, so dblclick
+// acts as a "restore" gesture — the same as clicking the maximize-square
+// action button.
+window.wm.onStickyRestoreRequested(() => {
+  if (document.body.classList.contains('sticky-mode')) {
+    restoreFromSticky();
+  }
+});
+
+// Escape inside the comment defocuses it so the next click restores
+// instead of staying in the comment. Doesn't restore on its own — keep
+// that as an explicit click gesture.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (!document.body.classList.contains('sticky-mode')) return;
+  if (document.activeElement === stickyComment) stickyComment.blur();
+});
+
+// Bootstrap. Called last so all module-level consts (sticky DOM refs, the
+// hue/colour bridge, etc.) are initialised before init() touches them.
+init();

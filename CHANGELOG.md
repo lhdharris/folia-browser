@@ -5,6 +5,38 @@ All notable changes to Folia Browser are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0]
+
+### Added
+- **Sticky-note minimize.** The toolbar's old minimize button has been
+  replaced with a sticky-note shrink: clicking it animates the window down
+  to a small on-desktop "post-it" carrying the action label
+  ("Visited ctvnews.ca", "Searched for 'html colour yellow'") plus an
+  editable italic comment for what the window is parked for. The webview
+  is hidden but kept alive — audio/video keep playing, no reload on
+  restore. Hover-revealed action icons (`+`, maximize-square, `×`) sit in
+  the top-right; dblclicking the sticky also restores it. Lone-window
+  stickies freeze their colour to a sticky-yellow lock that survives
+  sibling windows opening and closing. Always-on-top is hardened for
+  Wayland (`screen-saver` level + `setVisibleOnAllWorkspaces`, applied
+  before AND after the bounds animation). A speaker glyph next to the
+  title appears whenever the parked page is producing audio. Sticky
+  internal sizing scales with the global zoom setting via a
+  `--sticky-zoom` CSS variable so changing zoom updates open stickies
+  without restart.
+- **Stickies persist across app restarts (Chrome-style tab restore).**
+  Every sticky-noted window is saved to `userData/stickies.json` live
+  (debounced) and re-created on next launch as a *lazy* sticky: the
+  window pops back at its saved position, sized as a sticky, with the
+  title and comment intact — but the page itself doesn't load until you
+  maximise the sticky. Maximising the sticky then loads the URL through
+  the existing layout-aware deferral. Closing a sticky removes it from
+  the saved list; quitting flushes the snapshot before exit. Saved
+  bounds are clamped to the nearest display's work area on launch so a
+  monitor disconnected between sessions doesn't strand the sticky
+  off-screen. Regular non-sticky windows are **not** persisted — only
+  stickies survive across launches.
+
 ## [1.1.5]
 
 ### Fixed

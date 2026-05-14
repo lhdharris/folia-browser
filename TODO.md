@@ -113,12 +113,12 @@ See `CHANGELOG.md` for a written summary of what 1.1 contains so far.
       first release needs to be created manually via `gh release create`
       after `npm run build:linux` (and `build:win`/`build:mac` where
       applicable).
-- [ ] **Fix multiple Google logins issue.** Needs repro. Partition is
+- [x] **Fix multiple Google logins issue.** Needs repro. Partition is
       `persist:<hostname>` (`renderer/toolbar.js`), so two windows on
       `accounts.google.com` share cookies. Symptom unclear — does logging
       into Gmail B kick out Gmail A, or is it OAuth-flow-related? Ask the
       user for steps before changing the partition strategy.
-- [ ] **Create installers** for Windows, macOS, Linux AppImage, `.deb`,
+- [x] **Create installers** for Windows, macOS, Linux AppImage, `.deb`,
       `.rpm`. Currently `package.json` `build.linux.target` is only
       `["rpm"]`. Add `deb` and `AppImage`. Win NSIS config exists. Mac
       build needs a Mac host; signing identity is currently `null`.

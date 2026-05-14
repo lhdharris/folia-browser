@@ -79,13 +79,17 @@
       </button>
 
       <div id="wm-buttons">
-        <button id="minimize" title="Minimize">
-          <svg width="10" height="2" viewBox="0 0 10 2" aria-hidden="true">
-            <line x1="0" y1="1" x2="10" y2="1" stroke="currentColor" stroke-width="1.5"
-                  stroke-linecap="round"/>
+        <button id="sticky" disabled title="Sticky Note">
+          <svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true">
+            <!-- Square with the top-right corner folded down. The "fold" is
+                 a small triangle whose hypotenuse is the visible page edge. -->
+            <path d="M1 1 H7 L10 4 V10 H1 Z" stroke="currentColor" stroke-width="1.3"
+                  fill="none" stroke-linejoin="round"/>
+            <path d="M7 1 V4 H10" stroke="currentColor" stroke-width="1.3"
+                  fill="none" stroke-linejoin="round"/>
           </svg>
         </button>
-        <button id="maximize" title="Maximize / Restore">
+        <button id="maximize" title="Maximize">
           <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
             <rect x="1" y="1" width="8" height="8" stroke="currentColor" stroke-width="1.5"
                   fill="none" rx="1"/>
@@ -106,6 +110,51 @@
 
     <div id="webview-wrap">
       <webview id="content" allowpopups partition="persist:folia"></webview>
+    </div>
+
+    <!-- Sticky-note overlay. Hidden by default; shown via body.sticky-mode
+         while the OS window is animated down to STICKY_W×STICKY_H in main.
+         Click anywhere outside the comment / menu restores. -->
+    <div id="sticky-overlay" hidden>
+      <!-- Hover-revealed action icons in the top-right, mirroring the
+           wm-buttons array's look. Each is a no-drag click target so the
+           rest of the sticky stays draggable. -->
+      <div id="sticky-actions">
+        <button class="sticky-action-btn" id="sticky-new" title="New window">
+          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+            <line x1="5" y1="1" x2="5" y2="9" stroke="currentColor" stroke-width="1.5"
+                  stroke-linecap="round"/>
+            <line x1="1" y1="5" x2="9" y2="5" stroke="currentColor" stroke-width="1.5"
+                  stroke-linecap="round"/>
+          </svg>
+        </button>
+        <button class="sticky-action-btn" id="sticky-restore" title="Maximize">
+          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+            <rect x="1" y="1" width="8" height="8" stroke="currentColor" stroke-width="1.5"
+                  fill="none" rx="1"/>
+          </svg>
+        </button>
+        <button class="sticky-action-btn" id="sticky-x" title="Close">
+          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+            <line x1="1" y1="1" x2="9" y2="9" stroke="currentColor" stroke-width="1.5"
+                  stroke-linecap="round"/>
+            <line x1="9" y1="1" x2="1" y2="9" stroke="currentColor" stroke-width="1.5"
+                  stroke-linecap="round"/>
+          </svg>
+        </button>
+      </div>
+      <div id="sticky-header">
+        <span id="sticky-audio-icon" title="Audio playing">
+          <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M3 6 H6 L9.5 3 V13 L6 10 H3 Z" fill="currentColor"/>
+            <path d="M11.5 5 Q13.5 8 11.5 11" stroke="currentColor" stroke-width="1.3"
+                  fill="none" stroke-linecap="round"/>
+          </svg>
+        </span>
+        <div id="sticky-title"></div>
+      </div>
+      <div id="sticky-comment" contenteditable="true"
+           data-placeholder="What's this for?"></div>
     </div>
   </div>
   <script src="toolbar.js"></script>

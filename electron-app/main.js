@@ -19,6 +19,10 @@ app.setName('Folia Browser');
 // platform — so this stays consistent regardless of where Chromium parks
 // other state (cookies, the Castlabs Components/CDM cache, etc.).
 const SETTINGS_PATH = path.join(app.getPath('userData'), 'settings.json');
+// Stickied windows persisted across app restarts. Each entry is enough to
+// re-create a lazy sticky on next launch (URL deferred until restore — see
+// the "Sticky-window persistence" section below).
+const STICKIES_PATH = path.join(app.getPath('userData'), 'stickies.json');
 // downloadPath null → use the platform downloads folder (resolved at use-time
 // because app.getPath('downloads') is only valid after `app` is constructed).
 const SETTINGS_DEFAULTS = {
@@ -106,8 +110,53 @@ function findOwningWindow(guestWebContents) {
 // hash of its hostname (same site → same colour), but if that's too close to
 // any open window's existing hue it slides into the largest gap on the wheel.
 // Single-window case clears the hue so a lone window stays default grey.
-const windowHues = new Map();  // winId -> { hostname, hue: number | null }
+//
+// `lockedColor` overrides the hue → hsl pipeline with a literal CSS colour
+// (e.g. `#FFFFE0` for a sticky-noted lone window). Once set, recomputeHues
+// leaves the entry alone forever (the colour is sticky like an assigned hue),
+// and the renderer applies the literal string to `--toolbar-bg` instead of
+// the hsl(hue, …) formula.
+const windowHues = new Map();  // winId -> { hostname, hue: number|null, lockedColor: string|null }
 const HUE_SPACING_FACTOR = 0.7;
+
+// Sticky-note minimize. Replacing the OS-level minimize, the sticky button
+// shrinks the BrowserWindow into a small on-desktop "post-it" carrying the
+// window's action label + an editable comment. Real OS resize, animated
+// from current bounds → STICKY_BASE_W×STICKY_BASE_H × settings.zoom,
+// anchored at the current top-left.
+const STICKY_BASE_W = 280;
+const STICKY_BASE_H = 200;
+const STICKY_LOCK_COLOR = '#FFFFE0';
+const STICKY_ANIM_MS = 260;
+
+function stickyBoundsFor(cur) {
+  const zoom = settings.zoom || 1;
+  return {
+    x: cur.x,
+    y: cur.y,
+    width:  Math.round(STICKY_BASE_W * zoom),
+    height: Math.round(STICKY_BASE_H * zoom),
+  };
+}
+
+// Wayland alwaysOnTop is best-effort: compositors honour the level hint
+// in different ways, and some reset it on bounds changes. Belt-and-braces:
+// 'screen-saver' (highest level) + setVisibleOnAllWorkspaces, applied
+// before AND after the bounds animation so the WM picks it up regardless
+// of which order it processes the events.
+function pinStickyOnTop(win) {
+  if (win.isDestroyed()) return;
+  win.setAlwaysOnTop(true, 'screen-saver');
+  try {
+    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  } catch {}
+}
+
+function unpinStickyOnTop(win) {
+  if (win.isDestroyed()) return;
+  win.setAlwaysOnTop(false);
+  try { win.setVisibleOnAllWorkspaces(false); } catch {}
+}
 
 function hostnameHue(hostname) {
   let h = 5381;
@@ -142,9 +191,19 @@ function assignHue(preferred, others) {
   return bestMid;
 }
 
-function sendHueToWindow(winId, hue) {
+// CSS colour string for an entry, or null if the window should be untinted.
+// lockedColor wins when present (sticky-note frozen colour); otherwise hue
+// is converted to the toolbar's pastel hsl. Renderer applies whatever this
+// returns directly to `--toolbar-bg`.
+function colorForEntry(info) {
+  if (info.lockedColor) return info.lockedColor;
+  if (info.hue !== null) return `hsl(${info.hue}, 50%, 90%)`;
+  return null;
+}
+
+function sendColorToWindow(winId, color) {
   const w = BrowserWindow.fromId(winId);
-  if (w && !w.isDestroyed()) w.webContents.send('hue-changed', hue);
+  if (w && !w.isDestroyed()) w.webContents.send('window-color', color);
 }
 
 function recomputeHues() {
@@ -153,30 +212,38 @@ function recomputeHues() {
   const shouldTint = enabled && entries.length >= 2;
 
   if (!shouldTint) {
+    // Solo window (or disabled): drop any pastel hue. lockedColor entries
+    // (e.g. sticky-yellow) are left intact — that's the whole point of the
+    // lock, and the renderer keeps painting the locked colour.
     for (const [id, info] of entries) {
+      if (info.lockedColor) continue;
       if (info.hue !== null) {
         info.hue = null;
-        sendHueToWindow(id, null);
+        sendColorToWindow(id, null);
       }
     }
     return;
   }
 
   // Sticky: keep existing assignments, only fill null slots (insertion order).
+  // lockedColor entries are also "assigned" in the sense that they don't need
+  // a hue — they're skipped here. Their colour doesn't participate in pastel
+  // spacing (the locked colours aren't on the pastel wheel).
   const assigned = entries.map(([, info]) => info.hue).filter((h) => h !== null);
   for (const [id, info] of entries) {
+    if (info.lockedColor) continue;
     if (info.hue !== null) continue;
     const preferred = hostnameHue(info.hostname);
     const hue = assignHue(preferred, assigned);
     info.hue = hue;
     assigned.push(hue);
-    sendHueToWindow(id, hue);
+    sendColorToWindow(id, colorForEntry(info));
   }
 }
 
 function registerWindowHostname(win, hostname) {
   if (!hostname || windowHues.has(win.id)) return;
-  windowHues.set(win.id, { hostname, hue: null });
+  windowHues.set(win.id, { hostname, hue: null, lockedColor: null });
   recomputeHues();
 }
 
@@ -191,9 +258,12 @@ function unregisterWindow(winId) {
 // same offset and start at work-area origin + offset.
 const CASCADE_OFFSET = 32;
 
+// `opener` may be in sticky-note mode; its current bounds would be the tiny
+// sticky rect. We want the new window to cascade off the *pre-shrink* size,
+// otherwise children inherit the postage-stamp dimensions.
 function cascadedBoundsFrom(opener) {
   if (!opener || opener.isDestroyed()) return null;
-  const o = opener.getBounds();
+  const o = opener._sticky?.originalBounds || opener.getBounds();
   const work = screen.getDisplayMatching(o).workArea;
 
   const maxW = work.width  - 2 * CASCADE_OFFSET;
@@ -215,6 +285,131 @@ function cascadedBoundsFrom(opener) {
     y = o.y;
   }
   return { x, y, width: o.width, height: o.height };
+}
+
+// Animated bounds change, cross-platform. macOS exposes a native animated
+// setBounds via the second arg (Cocoa NSWindow animator) — way smoother
+// than any JS-driven loop. Linux and Windows ignore that flag, so for
+// those we interpolate in main with setTimeout ticks + easeOutCubic.
+//
+// Tick interval is 30ms (~33fps), not 16ms (~60fps), on purpose: each
+// setBounds triggers a full Wayland configure → Chromium repaint at the
+// new size, often >20ms. Tighter ticks queue faster than the compositor
+// can drain → visible chop. 30ms gives breathing room on Mutter / KWin
+// Wayland.
+//
+// Easing is easeOutCubic — fast start, gentle settle. Picked over the
+// symmetric easeInOutQuad because the tick floor only gives us ~8-9 frames
+// for a sub-300ms animation. easeOutCubic puts the small per-frame deltas
+// at the end where they look like smooth deceleration, and the big deltas
+// at the start where they're masked by motion (each big-delta frame is
+// only on screen for one tick before the next one paints over it). The
+// symmetric curve put the biggest deltas in the middle where they read
+// as discrete jumps. Returns a promise that resolves after `ms` so
+// callers can sequence post-animation work (e.g. focusing the sticky
+// comment area).
+const ANIM_TICK_MS = 30;
+
+function animateBounds(win, target, ms) {
+  return new Promise((resolve) => {
+    if (win.isDestroyed()) return resolve();
+    if (process.platform === 'darwin') {
+      // Native macOS animation. No completion callback exposed by Electron,
+      // so resolve after the requested duration — close enough for the
+      // renderer's "focus comment after shrink" sequencing.
+      win.setBounds(target, true);
+      setTimeout(resolve, ms);
+      return;
+    }
+    const start = win.getBounds();
+    const t0 = Date.now();
+    const tick = () => {
+      if (win.isDestroyed()) return resolve();
+      const elapsed = Date.now() - t0;
+      const t = Math.min(1, elapsed / ms);
+      const eased = 1 - Math.pow(1 - t, 3);
+      win.setBounds({
+        x:      Math.round(start.x      + (target.x      - start.x)      * eased),
+        y:      Math.round(start.y      + (target.y      - start.y)      * eased),
+        width:  Math.round(start.width  + (target.width  - start.width)  * eased),
+        height: Math.round(start.height + (target.height - start.height) * eased),
+      });
+      if (t < 1) setTimeout(tick, ANIM_TICK_MS);
+      else resolve();
+    };
+    tick();
+  });
+}
+
+// ---- Sticky-window persistence ----------------------------------------
+// On every relevant change (shrink, restore, comment edit, drag, close)
+// we snapshot the currently-stickied windows to STICKIES_PATH (debounced
+// ~200ms). On launch, each saved entry is re-created as a *lazy* sticky:
+// the BrowserWindow opens at the saved sticky bounds with sticky-mode
+// already applied, but the webview's `src` is never set so no guest
+// process spawns. The URL is stored as `deferredUrl` on `_sticky` and
+// loaded by the renderer (via the existing startLoad path) only when the
+// user maximises the sticky — Chrome-style tab restore.
+
+let writeStickiesTimer = null;
+function scheduleSaveStickies() {
+  if (writeStickiesTimer) return;
+  writeStickiesTimer = setTimeout(() => {
+    writeStickiesTimer = null;
+    saveStickiesNow();
+  }, 200);
+}
+
+function flushSaveStickies() {
+  if (writeStickiesTimer) {
+    clearTimeout(writeStickiesTimer);
+    writeStickiesTimer = null;
+  }
+  saveStickiesNow();
+}
+
+function saveStickiesNow() {
+  const entries = [];
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (w.isDestroyed() || !w._sticky) continue;
+    const info = windowHues.get(w.id);
+    entries.push({
+      url:            w._sticky.url     || null,
+      verb:           w._sticky.verb    || null,
+      label:          w._sticky.label   || null,
+      comment:        w._sticky.comment || '',
+      originalBounds: w._sticky.originalBounds,
+      stickyBounds:   w._sticky.stickyBounds,
+      lockedColor:    info?.lockedColor || null,
+      hostname:       info?.hostname    || null,
+    });
+  }
+  try {
+    fs.mkdirSync(path.dirname(STICKIES_PATH), { recursive: true });
+    fs.writeFileSync(STICKIES_PATH, JSON.stringify(entries, null, 2));
+  } catch {}
+}
+
+function loadStickiesFromDisk() {
+  try {
+    const data = JSON.parse(fs.readFileSync(STICKIES_PATH, 'utf8'));
+    return Array.isArray(data) ? data : [];
+  } catch { return []; }
+}
+
+// Saved bounds may be off-screen if the user disconnected a monitor between
+// quit and launch. Pull the rect into the nearest display's work area so the
+// restored sticky is always visible and clickable.
+function clampBoundsToDisplay(bounds) {
+  const work = screen.getDisplayMatching(bounds).workArea;
+  const width  = Math.min(bounds.width,  work.width);
+  const height = Math.min(bounds.height, work.height);
+  return {
+    x: Math.max(work.x, Math.min(work.x + work.width  - width,  bounds.x)),
+    y: Math.max(work.y, Math.min(work.y + work.height - height, bounds.y)),
+    width,
+    height,
+  };
 }
 
 // Whether `host` (the part before any path; may include :port) is a numeric
@@ -267,12 +462,21 @@ function pickUrlArg(argv, start) {
 // window is focused at the moment — that covers second-instance launches and
 // macOS protocol clicks. If nothing is focused (startup, dock activate after
 // all windows closed), the new window gets Electron's default placement.
-function createWindow(url, opener) {
-  const cascade = cascadedBoundsFrom(opener || BrowserWindow.getFocusedWindow());
+function createWindow(url, opener, options = {}) {
+  // `restoreSticky`: a saved entry from stickies.json. When set, the window
+  // opens directly into sticky-mode at the saved bounds with no URL loaded —
+  // the renderer queries get-init-state, paints the overlay, and only loads
+  // the deferred URL once the user maximises.
+  const restore = options.restoreSticky;
+  const initialBounds = restore
+    ? clampBoundsToDisplay(restore.stickyBounds)
+    : (cascadedBoundsFrom(opener || BrowserWindow.getFocusedWindow())
+       || { width: 1200, height: 800 });
+
   const win = new BrowserWindow({
-    width:  cascade ? cascade.width  : 1200,
-    height: cascade ? cascade.height : 800,
-    ...(cascade ? { x: cascade.x, y: cascade.y } : {}),
+    width:  initialBounds.width,
+    height: initialBounds.height,
+    ...(initialBounds.x !== undefined ? { x: initialBounds.x, y: initialBounds.y } : {}),
     frame: false,
     backgroundColor: '#ffffff',
     resizable: true,
@@ -286,8 +490,40 @@ function createWindow(url, opener) {
     },
   });
 
-  // Empty hash → renderer shows the search bar and waits for input.
-  const hash = url ? '#' + encodeURIComponent(url) : '';
+  if (restore) {
+    // Mirror everything wm-sticky-shrink does at runtime: _sticky state for
+    // size-restore + persistence, hue/lockedColor registration so the toolbar
+    // paints the saved colour the moment it's revealed, always-on-top pin,
+    // and the fixed-size clamp that prevents WM dblclick-to-maximise from
+    // resizing the window. `deferredUrl` is the lazy-load signal — the
+    // restore IPC returns it once and the renderer calls startLoad with it.
+    win._sticky = {
+      originalBounds: restore.originalBounds,
+      stickyBounds:   initialBounds,
+      url:            restore.url,
+      verb:           restore.verb,
+      label:          restore.label,
+      comment:        restore.comment || '',
+      deferredUrl:    restore.url,
+      lazy:           true,
+    };
+    if (restore.hostname) {
+      windowHues.set(win.id, {
+        hostname:    restore.hostname,
+        hue:         null,
+        lockedColor: restore.lockedColor || null,
+      });
+      recomputeHues();
+    }
+    pinStickyOnTop(win);
+    win.setMinimumSize(initialBounds.width, initialBounds.height);
+    win.setMaximumSize(initialBounds.width, initialBounds.height);
+  }
+
+  // Empty hash → renderer shows the search bar and waits for input. For a
+  // lazy-restored sticky the renderer queries get-init-state instead and
+  // shows the sticky overlay without loading any URL.
+  const hash = restore ? '' : (url ? '#' + encodeURIComponent(url) : '');
   win.loadURL('file://' + path.join(__dirname, 'renderer', 'index.html') + hash);
 
   win.webContents.on('did-attach-webview', (_, wvContents) => {
@@ -299,6 +535,15 @@ function createWindow(url, opener) {
     // cross-origin navigation, so re-applying on dom-ready keeps it stable.
     wvContents.on('dom-ready', () => {
       try { wvContents.setZoomFactor(settings.zoom || 1); } catch {}
+    });
+
+    // Audio state — used by the sticky-note speaker indicator. Fires only
+    // when the audible state actually changes (silent video doesn't trip
+    // it; muted-then-unmuted audio does), which is exactly what the user
+    // wants on a parked sticky.
+    wvContents.on('audio-state-changed', (event) => {
+      if (win.isDestroyed()) return;
+      win.webContents.send('audio-state', !!event.audible);
     });
 
     // getDisplayMedia (screen sharing). Chromium rejects this by default in
@@ -471,6 +716,52 @@ function createWindow(url, opener) {
     });
   }
 
+  // Sticky-note windows can't be made truly maximize-inert on GNOME
+  // Wayland — Mutter handles the dblclick gesture before any JS can
+  // preventDefault, and the post-hoc options are all visibly broken:
+  //   - `unmaximize()` alone shaves a pixel off the size each cycle
+  //     (a Wayland configure-event race between min=max and the state
+  //     transition); the "shrinks once on dblclick" bug.
+  //   - Doing nothing leaves the window stuck in the top-left corner
+  //     where Mutter moved it as part of the maximize gesture.
+  //   - `unmaximize() + setBounds(stickyBounds)` accumulates shrink each
+  //     cycle (the original "shrinks to nothing" bug).
+  // Instead, repurpose the gesture: dblclicking a sticky restores it.
+  // The user can't actually maximize a sticky, so dblclick → restore is
+  // a natural UX, and the upcoming animateBounds in the restore handler
+  // wipes any size drift the unmaximize introduces.
+  win.on('maximize', () => {
+    if (!win._sticky) return;
+    win.unmaximize();
+    win.webContents.send('sticky-restore-requested');
+  });
+
+  // Stickies persistence: every drag of a parked sticky updates its saved
+  // position so the next launch puts it back exactly where the user left it.
+  // `move` fires throughout the drag on Linux/Windows; `moved` fires once at
+  // the end on macOS — debounce dedupes both. Guard on _sticky so non-sticky
+  // window moves don't hammer the disk.
+  //
+  // `trackMoves` is gated on `show` + 250ms settle: on Wayland the
+  // compositor ignores our initial x/y hints and places the window where
+  // it wants, firing `move` events as it does so. Without this gate, the
+  // WM-placed position would immediately overwrite the saved bounds for
+  // every lazy-restored sticky. After the window settles, only real user
+  // drags fire the listener.
+  let trackMoves = false;
+  win.once('show', () => {
+    setTimeout(() => { trackMoves = true; }, 250);
+  });
+  const trackStickyMove = () => {
+    if (!trackMoves) return;
+    if (win.isDestroyed() || !win._sticky) return;
+    const b = win.getBounds();
+    win._sticky.stickyBounds = { x: b.x, y: b.y, width: b.width, height: b.height };
+    scheduleSaveStickies();
+  };
+  win.on('move', trackStickyMove);
+  win.on('moved', trackStickyMove);
+
   win.on('closed', () => {
     unregisterWindow(win.id);
     // Resolve any in-flight permission prompts for this window as denials —
@@ -481,6 +772,10 @@ function createWindow(url, opener) {
       pendingPermissionRequests.delete(id);
       try { req.callback(false); } catch {}
     }
+    // Drop this window from the persisted stickies snapshot. No-op if it
+    // wasn't a sticky; if it was, the snapshot now excludes it because
+    // saveStickiesNow iterates the live BrowserWindow list.
+    scheduleSaveStickies();
   });
 }
 
@@ -679,14 +974,142 @@ function attachDownloadHandler(sess) {
   });
 }
 
-// IPC: window controls
+// IPC: window controls. Note: there's no `wm-minimize` — the toolbar's old
+// minimize button has been replaced with the sticky-note shrink (below),
+// which collapses the window into a small on-desktop note instead of
+// hiding it to the taskbar.
 ipcMain.on('wm-close',    (e) => BrowserWindow.fromWebContents(e.sender)?.close());
-ipcMain.on('wm-minimize', (e) => BrowserWindow.fromWebContents(e.sender)?.minimize());
 ipcMain.on('wm-maximize', (e) => {
   const win = BrowserWindow.fromWebContents(e.sender);
   if (!win) return;
   if (win.isMaximized()) win.unmaximize();
   else win.maximize();
+});
+
+// IPC: sticky-note minimize. Shrink resolves once the bounds animation
+// finishes so the renderer can sequence "focus the comment area" after.
+// Restore mirrors. New-window-from-sticky cascades off the *original*
+// (pre-shrink) bounds — see cascadedBoundsFrom's _sticky branch.
+ipcMain.handle('wm-sticky-shrink', async (e, payload = {}) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  if (!win || win._sticky) return;
+  const originalBounds = win.getBounds();
+  const stickyBounds = stickyBoundsFor(originalBounds);
+  // stickyBounds is stored so the maximize-intercept handler can reset to
+  // the exact target size. On Wayland, repeated unmaximize() calls drift
+  // by a few pixels each cycle (compositor frame inset accounting), which
+  // caused the "smaller and smaller" sticky bug on dblclick-to-maximize.
+  // url/verb/label/comment come from the renderer so the persistence layer
+  // can rehydrate the sticky on next launch with its title and pending URL.
+  win._sticky = {
+    originalBounds,
+    stickyBounds,
+    url:     payload.url     || null,
+    verb:    payload.verb    || null,
+    label:   payload.label   || null,
+    comment: payload.comment || '',
+  };
+
+  // Lone window with no hue → freeze its colour to the sticky-yellow so it
+  // stays yellow forever (consistent with how assigned hues are sticky).
+  // recomputeHues skips lockedColor entries, and sendColorToWindow paints
+  // the literal string.
+  const info = windowHues.get(win.id);
+  if (info && info.hue === null && !info.lockedColor) {
+    info.lockedColor = STICKY_LOCK_COLOR;
+    sendColorToWindow(win.id, STICKY_LOCK_COLOR);
+  }
+
+  // Float above other windows so the user doesn't lose track of parked
+  // notes when working in another window. Pin before AND after the
+  // resize — see pinStickyOnTop for why.
+  pinStickyOnTop(win);
+
+  await animateBounds(win, stickyBounds, STICKY_ANIM_MS);
+
+  pinStickyOnTop(win);
+
+  // Lock the size after the animation. This tells the compositor the
+  // window is fixed-size, which on Wayland is what actually prevents
+  // dblclick-to-maximize from triggering. (The `maximize` JS listener
+  // alone wasn't enough — `unmaximize()+setBounds(stickyBounds)` raced
+  // the Wayland state transition and the window shaved pixels each
+  // cycle, the "shrinks to nothing on repeated dblclick" bug.)
+  // Programmatic setBounds in animations later re-unlocks first.
+  win.setMinimumSize(stickyBounds.width, stickyBounds.height);
+  win.setMaximumSize(stickyBounds.width, stickyBounds.height);
+
+  scheduleSaveStickies();
+});
+
+ipcMain.handle('wm-sticky-restore', async (e) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  if (!win || !win._sticky) return { deferredUrl: null };
+  const target = win._sticky.originalBounds;
+  // Lazy-restored stickies carry deferredUrl so the renderer can call
+  // startLoad after the animation grows the window back to full size
+  // (setting src on a still-shrunken webview triggers the layout-too-small
+  // bug guarded by the comment in renderer/toolbar.js).
+  const deferredUrl = win._sticky.deferredUrl || null;
+  win._sticky = null;
+  unpinStickyOnTop(win);
+
+  // Unlock the size before animating back up — the shrink handler clamped
+  // min/max to the sticky size to disable dblclick-maximize.
+  win.setMinimumSize(0, 0);
+  win.setMaximumSize(0, 0);
+
+  // Restore-to-grey: if this window is alone (no siblings), drop the
+  // sticky-yellow lock so the toolbar reverts to default. If there are
+  // siblings, keep the lock — yellow stays yellow alongside coloured
+  // siblings (matches the original "yellow stays yellow" rule).
+  const info = windowHues.get(win.id);
+  if (info?.lockedColor && BrowserWindow.getAllWindows().length === 1) {
+    info.lockedColor = null;
+    info.hue = null;
+    // Broadcast directly: recomputeHues' "no tint" branch only sends when
+    // hue actually changed, so a null→null transition wouldn't fire.
+    sendColorToWindow(win.id, null);
+  }
+
+  await animateBounds(win, target, STICKY_ANIM_MS);
+
+  scheduleSaveStickies();
+  return { deferredUrl };
+});
+
+// Renderer pushes comment edits live (debounced) so the persisted snapshot
+// stays in sync without main having to poll. No-op when called on a window
+// that isn't currently a sticky.
+ipcMain.on('wm-sticky-update-comment', (e, comment) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  if (!win || !win._sticky) return;
+  win._sticky.comment = typeof comment === 'string' ? comment : '';
+  scheduleSaveStickies();
+});
+
+// First-render bootstrap: the renderer queries this on init to decide
+// whether it's a fresh window (URL hash or blank) or a lazy-restored sticky
+// that needs its overlay painted from saved state. Reads _sticky directly so
+// non-lazy windows uniformly report `{lazy: false}`.
+ipcMain.handle('get-init-state', (e) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  if (!win?._sticky?.lazy) return { lazy: false };
+  return {
+    lazy:    true,
+    url:     win._sticky.url,
+    verb:    win._sticky.verb,
+    label:   win._sticky.label,
+    comment: win._sticky.comment || '',
+  };
+});
+
+ipcMain.on('wm-sticky-new-window', (e) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  if (!win) return;
+  // cascadedBoundsFrom already prefers _sticky.originalBounds, so passing
+  // win directly Just Works whether or not the opener is currently shrunken.
+  createWindow(null, win);
 });
 
 // IPC: settings
@@ -701,10 +1124,31 @@ ipcMain.on('settings-save', (_e, updated) => {
       if (w._guest && !w._guest.isDestroyed()) {
         try { w._guest.setZoomFactor(settings.zoom || 1); } catch {}
       }
+      // Re-resize any currently-shrunk sticky to match the new zoom so
+      // changing zoom while a sticky is open doesn't leave the window
+      // mismatched with its (newly-scaled) content. Update _sticky.stickyBounds
+      // so the maximize-intercept handler restores to the post-zoom size.
+      // Unlock min/max for the animation, then re-clamp to the new size.
+      if (w._sticky && !w.isDestroyed()) {
+        const newSticky = stickyBoundsFor(w.getBounds());
+        w._sticky.stickyBounds = newSticky;
+        w.setMinimumSize(0, 0);
+        w.setMaximumSize(0, 0);
+        animateBounds(w, newSticky, STICKY_ANIM_MS).then(() => {
+          if (w.isDestroyed() || !w._sticky) return;
+          w.setMinimumSize(newSticky.width, newSticky.height);
+          w.setMaximumSize(newSticky.width, newSticky.height);
+        });
+      }
     }
   }
   if (Object.prototype.hasOwnProperty.call(updated, 'pastelHues') && updated.pastelHues !== prev.pastelHues) {
     recomputeHues();
+  }
+  // Broadcast the full settings to all renderers — drives live updates
+  // for things like the sticky-zoom CSS variable.
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w.isDestroyed()) w.webContents.send('settings-changed', settings);
   }
 });
 
@@ -740,10 +1184,11 @@ ipcMain.on('window-navigated', (e, hostname) => {
   const win = BrowserWindow.fromWebContents(e.sender);
   if (win) registerWindowHostname(win, hostname);
 });
-ipcMain.handle('get-window-hue', (e) => {
+ipcMain.handle('get-window-color', (e) => {
   const win = BrowserWindow.fromWebContents(e.sender);
   if (!win) return null;
-  return windowHues.get(win.id)?.hue ?? null;
+  const info = windowHues.get(win.id);
+  return info ? colorForEntry(info) : null;
 });
 
 async function savePageAsPdf(win, guest) {
@@ -898,6 +1343,16 @@ if (!gotLock) {
     app.setAsDefaultProtocolClient('http');
     app.setAsDefaultProtocolClient('https');
 
+    // Rehydrate any sticky-noted windows from the previous session before
+    // opening anything else. Each becomes a lazy sticky (no URL loaded, no
+    // guest process) until the user maximises it. See the "Sticky-window
+    // persistence" section for the full lifecycle.
+    const savedStickies = loadStickiesFromDisk();
+    for (const entry of savedStickies) {
+      if (!entry?.stickyBounds || !entry?.originalBounds) continue;
+      createWindow(null, null, { restoreSticky: entry });
+    }
+
     if (pendingOpenUrl) {
       createWindow(resolveUrl(pendingOpenUrl));
       pendingOpenUrl = null;
@@ -905,7 +1360,14 @@ if (!gotLock) {
       // argv[1] is main.js in dev, first user arg in packaged AppImage
       const argvStart = app.isPackaged ? 1 : 2;
       const urlArg = pickUrlArg(process.argv, argvStart);
-      createWindow(urlArg ? resolveUrl(urlArg) : null);
+      // Skip the empty default window when stickies have already been
+      // restored — launching with stickies should bring just the stickies
+      // back, not pile on a blank window every time.
+      if (urlArg) {
+        createWindow(resolveUrl(urlArg));
+      } else if (savedStickies.length === 0) {
+        createWindow(null);
+      }
     }
 
     // GitHub Releases auto-updater. Skipped in dev (the updater checks
@@ -918,5 +1380,12 @@ if (!gotLock) {
 
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();
+  });
+
+  // Flush any pending stickies write before exit — the debounce timer would
+  // otherwise be cancelled on process shutdown and the last few seconds of
+  // sticky drags / comment edits would be lost.
+  app.on('before-quit', () => {
+    flushSaveStickies();
   });
 }

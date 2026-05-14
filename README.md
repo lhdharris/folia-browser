@@ -23,6 +23,7 @@ You read the page. You finish reading. You close the window.
 ## What it does
 
 - **One page per window.** No tab strip. No tab hoarding. Window management is your OS's job.
+- **Park pages as sticky notes.** Shrink any window into a small desktop note with a comment of your own. They float above other windows and come back where you left them after a restart.
 - **Notifications are off.** Permanently. No prompts, no override, no toggle.
 - **One login works everywhere.** All windows share a single cookie jar — sign into Google once and Gmail, Docs, YouTube all follow.
 - **DRM works.** Netflix, Spotify, Bitmovin — Widevine is built in via [Castlabs ECS](https://github.com/castlabs/electron-releases).
