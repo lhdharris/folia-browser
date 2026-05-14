@@ -31,7 +31,6 @@ const SETTINGS_DEFAULTS = {
   downloadPath: null,
   askDownloadPath: false,
   zoom: 1,
-  pastelHues: true,
   // Per-site permission grants. hostname -> true (allow) | false (block).
   // Absence means "ask next time". Notifications are intentionally omitted —
   // the handler hard-denies them regardless of any stored value.
@@ -263,14 +262,13 @@ function sendColorToWindow(winId, color) {
 }
 
 function recomputeHues() {
-  const enabled = settings.pastelHues !== false;
   const entries = [...windowHues.entries()];
-  const shouldTint = enabled && entries.length >= 2;
+  const shouldTint = entries.length >= 2;
 
   if (!shouldTint) {
-    // Solo window (or disabled): drop any pastel hue. lockedColor entries
-    // (e.g. sticky-yellow) are left intact — that's the whole point of the
-    // lock, and the renderer keeps painting the locked colour.
+    // Solo window: drop any pastel hue. lockedColor entries (e.g. sticky-yellow)
+    // are left intact — that's the whole point of the lock, and the renderer
+    // keeps painting the locked colour.
     for (const [id, info] of entries) {
       if (info.lockedColor) continue;
       if (info.hue !== null) {
@@ -1192,9 +1190,6 @@ ipcMain.on('settings-save', (_e, updated) => {
         });
       }
     }
-  }
-  if (Object.prototype.hasOwnProperty.call(updated, 'pastelHues') && updated.pastelHues !== prev.pastelHues) {
-    recomputeHues();
   }
   // Broadcast the full settings to all renderers — drives live updates
   // for things like the sticky-zoom CSS variable.

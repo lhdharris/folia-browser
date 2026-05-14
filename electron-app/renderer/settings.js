@@ -4,7 +4,6 @@ const downloadPathEl = document.getElementById('download-path');
 const pickFolderBtn  = document.getElementById('pick-download-folder');
 const askToggle      = document.getElementById('ask-download-toggle');
 const zoomSelect     = document.getElementById('zoom-select');
-const pastelToggle   = document.getElementById('pastel-toggle');
 
 let defaultDownloadPath = '';
 
@@ -27,7 +26,6 @@ async function init() {
   if (radio) radio.checked = true;
   drmToggle.checked = s.drmEnabled === true;
   zoomSelect.value = String(s.zoom ?? 1);
-  pastelToggle.checked = s.pastelHues !== false;
   renderDownloadPath(s);
 }
 
@@ -39,10 +37,6 @@ document.querySelectorAll('input[name="searchEngine"]').forEach((r) => {
 
 drmToggle.addEventListener('change', () => {
   window.wm.saveSettings({ drmEnabled: drmToggle.checked });
-});
-
-pastelToggle.addEventListener('change', () => {
-  window.wm.saveSettings({ pastelHues: pastelToggle.checked });
 });
 
 zoomSelect.addEventListener('change', () => {
