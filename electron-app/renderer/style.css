@@ -1,0 +1,648 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 15px;
+  color: #222;
+}
+
+#app {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+  border: 1px solid #9a9a9a;
+  overflow: hidden;
+}
+
+#toolbar {
+  flex: 0 0 48px;
+  display: flex;
+  align-items: center;
+  background: var(--toolbar-bg, #ececec);
+  border-bottom: 1px solid #b8b8b8;
+  padding: 0 8px;
+  gap: 4px;
+  position: relative;
+  user-select: none;
+  -webkit-app-region: drag;
+  transition: background 0.4s ease;
+}
+
+#toolbar button,
+#toolbar input {
+  -webkit-app-region: no-drag;
+}
+
+#nav-buttons,
+#wm-buttons {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+#drag-space {
+  flex: 1;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 8px;
+  min-width: 0;
+}
+
+#url-bar {
+  width: 100%;
+  max-width: 600px;
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid #b8b8b8;
+  border-radius: 4px;
+  background: #ffffff;
+  color: #222;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 15px;
+  font-weight: 400;
+  letter-spacing: 0.01em;
+  outline: none;
+  transition: border-color 0.1s, box-shadow 0.1s, opacity 0.18s ease, transform 0.18s ease;
+}
+
+#url-bar::placeholder {
+  color: #9a9a9a;
+  font-weight: 300;
+}
+
+#url-bar:focus {
+  border-color: #89cff0;
+  box-shadow: 0 0 0 2px rgba(137, 207, 240, 0.3);
+}
+
+#url-bar.leaving {
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+}
+
+#url-bar[hidden] {
+  display: none;
+}
+
+/* Static action label that replaces the URL bar after the user submits.
+   Set once on Enter; never changes. */
+#action-label {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 15px;
+  font-weight: 500;
+  color: #444;
+  letter-spacing: 0.01em;
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 600px;
+  opacity: 1;
+  transition: opacity 0.22s ease;
+  /* Opt out of the toolbar's drag region so click events reach the
+     renderer — without this, mousedowns over the label get treated as
+     window-drag starts by the WM and no click fires. */
+  -webkit-app-region: no-drag;
+  cursor: default;
+}
+
+#action-label.entering {
+  opacity: 0;
+}
+
+/* Head-shake "no" feedback when the user clicks the action label. The
+   label looks like a URL bar but isn't editable — Folia is tabless, so
+   navigation happens by opening a new window. The shake says "can't
+   type here", and after a few clicks #menu starts flashing green to
+   point at the way out. */
+@keyframes label-shake-no {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-5px); }
+  40%, 80% { transform: translateX(5px); }
+}
+#action-label.shake-no { animation: label-shake-no 450ms ease-in-out; }
+
+/* Pastel green swell on the ⋮ menu button and the "New window" menu
+   item. Triggered after the third URL-bar click as a gentle hint —
+   slow ease-in-out so it reads as a "breath" rather than a blink.
+   0%/100% to transparent briefly wipes any hover background, which is
+   fine here because the user's cursor is on the action label when the
+   menu pulses, and on the menu button when the new-window item pulses. */
+@keyframes button-flash-green {
+  0%, 100% { background: transparent; color: #444; }
+  50%      { background: #c8e6c9; color: #2a5d34; }
+}
+#menu.flash-green { animation: button-flash-green 1200ms ease-in-out; }
+
+@keyframes item-flash-green {
+  0%, 100% { background: transparent; color: #222; }
+  50%      { background: #c8e6c9; color: #2a5d34; }
+}
+#app-menu .item.flash-green { animation: item-flash-green 1300ms ease-in-out; }
+
+/* Wrapper provides explicit known dimensions to the webview.
+   This is the canonical Electron <webview> sizing pattern. */
+#webview-wrap {
+  flex: 1 1 auto;
+  display: flex;
+  position: relative;
+  min-height: 0;
+  background: #ffffff;
+}
+
+webview {
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  display: flex !important;
+  background: #ffffff;
+}
+
+button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #444;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+#nav-buttons button {
+  width: 36px;
+  height: 36px;
+}
+
+#wm-buttons button {
+  width: 32px;
+  height: 32px;
+}
+
+button:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+button:active:not(:disabled) {
+  background: rgba(0, 0, 0, 0.14);
+}
+
+button:disabled {
+  color: #bbb;
+  cursor: default;
+}
+
+#close:hover {
+  background: #e81123;
+  color: white;
+}
+
+/* Loading progress bar — sits flush at the bottom edge of the toolbar */
+#progress-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  width: 0%;
+  background: #89cff0;
+  opacity: 1;
+  pointer-events: none;
+}
+
+/* Download progress ring — sits between the URL bar and the window controls.
+   Stroke circumference = 2π·9 ≈ 56.55; JS sets stroke-dashoffset to
+   (1 - progress) * circumference. */
+#download-ring {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  cursor: default;
+}
+
+#download-ring[hidden] {
+  display: none;
+}
+
+#download-ring .fill {
+  transition: stroke-dashoffset 0.18s linear;
+}
+
+/* Down-arrow inside the ring while a download is in progress; hides the
+   moment the download completes and the checkmark fades in. */
+#download-ring .arrow {
+  opacity: 1;
+  transition: opacity 0.18s ease, stroke 0.18s ease;
+}
+
+#download-ring.complete {
+  cursor: pointer;
+}
+
+#download-ring.complete .arrow {
+  opacity: 0;
+}
+
+/* Completion: ring + checkmark go green. */
+#download-ring.complete .fill {
+  opacity: 0.55;
+  stroke: #2ea44f;
+}
+
+#download-ring.complete .check {
+  opacity: 1;
+  stroke: #2ea44f;
+  transition: opacity 0.18s ease 0.05s;
+}
+
+/* Click-during-download feedback: brief shake + red tint on the ring to
+   communicate "still downloading, can't open the folder yet". The arrow
+   inside follows the ring's stroke colour. */
+@keyframes ring-shake-red {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-3px); }
+  40%, 80% { transform: translateX(3px); }
+}
+#download-ring.shake-red { animation: ring-shake-red 360ms ease-in-out; }
+#download-ring.shake-red .fill { stroke: #b3261e; }
+#download-ring.shake-red .arrow { stroke: #b3261e; }
+#download-ring.shake-red .track { stroke: #f1d4d1; }
+
+/* Lock button — appears next to ⋮ once the page has either requested or
+   been granted any tracked permission for the current hostname. Closed
+   by default; turns warm + swaps to open lock SVG while a stream/watch
+   is live in the page. */
+#lock-button[hidden] { display: none; }
+#lock-button .lock-open { display: none; }
+#lock-button.active .lock-closed { display: none; }
+#lock-button.active .lock-open { display: block; }
+#lock-button.active { color: #2ea44f; }
+
+/* Permission popover — anchored under the lock button. Two modes share
+   the container: a prompt (first-time camera/mic/location request) and a
+   manage panel (per-hostname allow/block/ask grid). */
+#permission-popover {
+  position: fixed;
+  top: 0;
+  left: 0;
+  background: #ffffff;
+  border: 1px solid #b8b8b8;
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+  padding: 12px 14px;
+  min-width: 280px;
+  max-width: 360px;
+  z-index: 100;
+  -webkit-app-region: no-drag;
+  user-select: none;
+}
+
+#permission-popover[hidden] { display: none; }
+
+#permission-popover h3 {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #888;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+#permission-popover .prompt-text {
+  font-size: 15px;
+  line-height: 1.45;
+  color: #222;
+  margin-bottom: 12px;
+}
+
+#permission-popover .prompt-text strong { font-weight: 600; }
+
+#permission-popover .prompt-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+#permission-popover .prompt-buttons button {
+  padding: 6px 14px;
+  border-radius: 4px;
+  font-size: 15px;
+  cursor: pointer;
+  border: 1px solid #b8b8b8;
+  background: #ffffff;
+  color: #333;
+}
+
+#permission-popover .prompt-buttons .allow {
+  background: #89cff0;
+  border-color: #89cff0;
+  color: #ffffff;
+}
+
+#permission-popover .row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  gap: 12px;
+}
+
+#permission-popover .row + .row { border-top: 1px solid #f0f0f0; }
+
+#permission-popover .row-label {
+  font-size: 15px;
+  color: #222;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+#permission-popover .row-label .in-use {
+  font-size: 13px;
+  color: #2ea44f;
+  font-weight: 500;
+}
+
+#permission-popover .seg {
+  display: flex;
+  border: 1px solid #d8d8d8;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+#permission-popover .seg button {
+  padding: 4px 8px;
+  font-size: 13px;
+  background: #ffffff;
+  color: #555;
+  border: none;
+  cursor: pointer;
+  border-right: 1px solid #d8d8d8;
+}
+
+#permission-popover .seg button:last-child { border-right: none; }
+#permission-popover .seg button.current.allow { background: #d3edf7; color: #1a5b7a; }
+#permission-popover .seg button.current.block { background: #f7d8d6; color: #872119; }
+#permission-popover .seg button.current.ask   { background: #ececec; color: #333; }
+
+/* Invisible backdrop covering the whole window (including the webview area)
+   while the ⋮ menu is open. Without this, clicks inside the <webview> never
+   bubble to the toolbar's document, so the outside-click handler couldn't
+   see them and the menu stayed open. The backdrop sits one z-index below
+   the menu itself so menu clicks still land normally. */
+#app-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 99;
+  -webkit-app-region: no-drag;
+}
+#app-menu-backdrop[hidden] { display: none; }
+
+/* Toolbar ⋮ dropdown menu. Custom HTML popover replacing Electron's
+   native menu so it stays square and matches the rest of the chrome.
+   Anchored by toolbar.js so its top edge sits flush with the top of the
+   ⋮ button. */
+#app-menu {
+  position: fixed;
+  top: 0;
+  left: 0;
+  background: #ffffff;
+  border: 1px solid #b8b8b8;
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+  padding: 0;
+  min-width: 220px;
+  z-index: 100;
+  -webkit-app-region: no-drag;
+  user-select: none;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#app-menu[hidden] { display: none; }
+
+#app-menu .item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 36px;
+  padding: 0 14px;
+  background: transparent;
+  color: #222;
+  border: none;
+  font: inherit;
+  font-size: 15px;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#app-menu .item:hover:not(:disabled) { background: #d8d8d8; }
+#app-menu .item:disabled {
+  color: #a0a0a0;
+  cursor: default;
+  background: transparent;
+}
+
+#app-menu .item .accel {
+  color: #888;
+  font-size: 14px;
+  margin-left: 24px;
+}
+
+#app-menu .separator {
+  height: 1px;
+  background: #e6e6e6;
+  margin: 4px 0;
+}
+
+/* HTML5 fullscreen (YouTube, etc.) — main has put the host BrowserWindow
+   into real OS fullscreen; we just need to get out of the way so the
+   webview fills it. The 1px chrome border is also hidden so the video
+   sits flush to the monitor edges. */
+body.html-fullscreen #toolbar { display: none; }
+body.html-fullscreen #app { border: none; }
+
+/* Sticky-note minimize. While body.sticky-mode is set, the OS window has
+   been animated down to ~280×200 in main and the toolbar+webview are
+   hidden so the overlay can fill the whole shrunken window. Webview is
+   display:none (not unloaded) — audio/video keep playing, no reload on
+   restore. */
+body.sticky-mode #toolbar,
+body.sticky-mode #webview-wrap { display: none; }
+body.sticky-mode #app { border: none; }
+
+/* All sticky internal sizing is driven by --sticky-zoom (set on :root by
+   toolbar.js from settings.zoom). Default 1 = base sizes; 1.5 = 50% bigger
+   text/padding/buttons. Window dimensions are scaled in main to match. */
+
+#sticky-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  padding: calc(14px * var(--sticky-zoom, 1)) calc(16px * var(--sticky-zoom, 1));
+  /* Background follows the same --toolbar-bg variable that paints the
+     toolbar in normal mode — pastel hue when multi-window, locked
+     #FFFFE0 when shrunk-while-alone, fallback yellow if the window
+     somehow has no colour set. */
+  background: var(--toolbar-bg, #FFFFE0);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+  cursor: grab;
+  user-select: none;
+  z-index: 50;
+  /* Drag region: routes the move through the compositor's xdg_toplevel.move
+     on Wayland, which is the only way to reposition a window there (clients
+     can't call setBounds({x,y,…}) on Wayland — the protocol forbids it).
+     Side effect: the WM also enables its titlebar gestures (dblclick→
+     maximize, drag-to-top→snap-maximize). The `maximize` interceptor in
+     main.js catches those and snaps the sticky back to its stickyBounds. */
+  -webkit-app-region: drag;
+}
+
+#sticky-overlay[hidden] { display: none; }
+
+#sticky-header {
+  display: flex;
+  align-items: flex-start;
+  gap: calc(7px * var(--sticky-zoom, 1));
+  margin-bottom: calc(10px * var(--sticky-zoom, 1));
+  /* No padding-right reservation: title gets the full width, and the
+     hover-revealed action icons fade in *over* the title's right portion
+     (they're absolutely positioned). */
+}
+
+#sticky-title {
+  font-weight: 700;
+  font-size: calc(18px * var(--sticky-zoom, 1));
+  color: #2a2a2a;
+  line-height: 1.3;
+  flex: 1 1 auto;
+  /* Long search queries shouldn't push the comment off the bottom. */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Speaker glyph to the left of the title. Hidden by default; the renderer
+   adds .audible when the webview's wvContents reports audio-state-changed
+   with audible=true. */
+#sticky-audio-icon {
+  flex: 0 0 auto;
+  display: none;
+  align-items: center;
+  margin-top: calc(2px * var(--sticky-zoom, 1));
+  color: #2a2a2a;
+}
+#sticky-audio-icon.audible { display: inline-flex; }
+#sticky-audio-icon svg {
+  width:  calc(14px * var(--sticky-zoom, 1));
+  height: calc(14px * var(--sticky-zoom, 1));
+}
+
+#sticky-comment {
+  font-style: italic;
+  font-size: calc(15px * var(--sticky-zoom, 1));
+  color: #4a4a4a;
+  line-height: 1.4;
+  flex: 1 1 auto;
+  outline: none;
+  cursor: text;
+  overflow-y: auto;
+  /* Stable starting position for the cursor when first focused. */
+  min-height: 1.4em;
+  /* The overlay is a WM drag region; the comment must opt back out so
+     mousedown actually focuses it for typing instead of starting a drag. */
+  -webkit-app-region: no-drag;
+}
+
+#sticky-comment:empty::before {
+  content: attr(data-placeholder);
+  color: #999;
+  pointer-events: none;
+}
+
+/* Hover-revealed action array in the top-right corner — same idea as the
+   wm-buttons trio in the toolbar, but for sticky-mode. Each icon is a
+   no-drag click target; the empty space around them still drags the
+   window. The cluster reads as one faded panel rather than three boxed
+   buttons: a single linear-gradient backdrop spans the row, solid on
+   the right (sticky's own colour, so title text behind the icons is
+   hidden) and fading to transparent on the left so the panel blends
+   into the title area instead of cutting it with a hard edge. */
+#sticky-actions {
+  position: absolute;
+  top: calc(4px * var(--sticky-zoom, 1));
+  right: calc(4px * var(--sticky-zoom, 1));
+  display: flex;
+  gap: calc(2px * var(--sticky-zoom, 1));
+  padding:
+    calc(3px * var(--sticky-zoom, 1))
+    calc(4px * var(--sticky-zoom, 1))
+    calc(3px * var(--sticky-zoom, 1))
+    calc(24px * var(--sticky-zoom, 1));
+  border-radius: calc(8px * var(--sticky-zoom, 1));
+  background: linear-gradient(
+    to right,
+    transparent 0,
+    var(--toolbar-bg, #FFFFE0) calc(22px * var(--sticky-zoom, 1)),
+    var(--toolbar-bg, #FFFFE0) 100%
+  );
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  /* When invisible, don't intercept clicks meant for the title that's
+     now sitting underneath us (the title fills the full width). */
+  pointer-events: none;
+}
+
+#sticky-overlay:hover #sticky-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.sticky-action-btn {
+  width:  calc(24px * var(--sticky-zoom, 1));
+  height: calc(24px * var(--sticky-zoom, 1));
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  /* No per-button halo — the parent #sticky-actions provides a single
+     faded backdrop that hides title text behind the whole cluster. */
+  color: #2a2a2a;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Opt out of the overlay's drag region so the buttons receive clicks
+     instead of starting a window move. */
+  -webkit-app-region: no-drag;
+}
+
+.sticky-action-btn:hover { background: rgba(0, 0, 0, 0.08); }
+.sticky-action-btn:active { background: rgba(0, 0, 0, 0.14); }
+#sticky-x:hover { background: #e81123; color: white; }
+
+.sticky-action-btn svg {
+  width:  calc(10px * var(--sticky-zoom, 1));
+  height: calc(10px * var(--sticky-zoom, 1));
+}
+
+
