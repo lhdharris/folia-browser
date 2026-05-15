@@ -1,6 +1,6 @@
 {
   "name": "folia-browser",
-  "version": "2.0.0-beta.2",
+  "version": "2.0.0-beta.3",
   "description": "Folia Browser (Beta) — frameless single-page Electron browser. No tabs; every popup gets its own window. Widevine via Castlabs ECS.",
   "main": "main.js",
   "author": {

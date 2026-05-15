@@ -191,14 +191,24 @@ function unpinStickyOnTop(win) {
 //     double-clickable and zoom isn't called"), which disables the
 //     gesture at the source. Programmatic setBounds still works, so the
 //     shrink/restore animations are unaffected.
+//
+// Linux-only ordering trap: Electron's setResizable on Linux saves the
+// current min/max when going false, and *restores* those saved values when
+// going true — so setResizable(true) called after setMinimumSize(0,0) /
+// setMaximumSize(0,0) clobbers the zeros with whatever was saved at lock
+// time (the sticky width/height). The sticky would then animate back to
+// its originalBounds but the WM would clamp it to sticky size and refuse
+// any subsequent resize. Order matters: setResizable first, explicit
+// min/max second — the explicit calls overwrite the restore on unlock,
+// and on lock the sequence is symmetric.
 function lockStickySize(win, w, h) {
   if (win.isDestroyed()) return;
   if (process.platform === 'darwin') {
     win.setResizable(false);
   } else {
+    win.setResizable(false);
     win.setMinimumSize(w, h);
     win.setMaximumSize(w, h);
-    win.setResizable(false);
   }
 }
 
@@ -207,9 +217,9 @@ function unlockStickySize(win) {
   if (process.platform === 'darwin') {
     win.setResizable(true);
   } else {
+    win.setResizable(true);
     win.setMinimumSize(0, 0);
     win.setMaximumSize(0, 0);
-    win.setResizable(true);
   }
 }
 
@@ -434,6 +444,7 @@ function saveStickiesNow() {
       comment:        w._sticky.comment || '',
       originalBounds: w._sticky.originalBounds,
       stickyBounds:   w._sticky.stickyBounds,
+      wasMaximized:   !!w._sticky.wasMaximized,
       lockedColor:    info?.lockedColor || null,
       hostname:       info?.hostname    || null,
     });
@@ -554,6 +565,7 @@ function createWindow(url, opener, options = {}) {
     win._sticky = {
       originalBounds: restore.originalBounds,
       stickyBounds:   initialBounds,
+      wasMaximized:   !!restore.wasMaximized,
       url:            restore.url,
       verb:           restore.verb,
       label:          restore.label,
@@ -1046,6 +1058,14 @@ ipcMain.on('wm-maximize', (e) => {
 ipcMain.handle('wm-sticky-shrink', async (e, payload = {}) => {
   const win = BrowserWindow.fromWebContents(e.sender);
   if (!win || win._sticky) return;
+  // Shrinking from a maximized window: setBounds shrinks the visible rect
+  // but Mutter keeps the WM "maximized" flag set, leaving the window in a
+  // half-maximized state until the user drags it. unmaximize() before the
+  // animation drops the flag cleanly; our subsequent setBounds ticks
+  // override the WM's auto-snap to normal bounds. wasMaximized rides on
+  // _sticky so restore can re-maximize.
+  const wasMaximized = win.isMaximized();
+  if (wasMaximized) win.unmaximize();
   const originalBounds = win.getBounds();
   const stickyBounds = stickyBoundsFor(originalBounds);
   // stickyBounds is stored so the maximize-intercept handler can reset to
@@ -1057,6 +1077,7 @@ ipcMain.handle('wm-sticky-shrink', async (e, payload = {}) => {
   win._sticky = {
     originalBounds,
     stickyBounds,
+    wasMaximized,
     url:     payload.url     || null,
     verb:    payload.verb    || null,
     label:   payload.label   || null,
@@ -1102,6 +1123,7 @@ ipcMain.handle('wm-sticky-restore', async (e) => {
   // (setting src on a still-shrunken webview triggers the layout-too-small
   // bug guarded by the comment in renderer/toolbar.js).
   const deferredUrl = win._sticky.deferredUrl || null;
+  const wasMaximized = win._sticky.wasMaximized;
   win._sticky = null;
   unpinStickyOnTop(win);
 
@@ -1124,6 +1146,13 @@ ipcMain.handle('wm-sticky-restore', async (e) => {
   }
 
   await animateBounds(win, target, STICKY_ANIM_MS);
+
+  // If the window was maximized before shrinking, re-flag it maximized
+  // now that it's back at the work-area bounds. The animation already
+  // drew the visible rect at maximized size, so this is a state-only
+  // update — no visible jump — and gets WM gestures (dblclick title bar,
+  // drag-from-top) working as the user expects again.
+  if (wasMaximized && !win.isDestroyed()) win.maximize();
 
   scheduleSaveStickies();
   return { deferredUrl };
