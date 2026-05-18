@@ -28,10 +28,13 @@ git push origin dev
 Confirm `git log --oneline origin/dev | head -5` on Linux includes the commits
 you expect to ship. Then close the laptop.
 
-> **What stays on dev only:** the commit `cca6770 "Rename app to
-> folia-browser-dev on dev branch"` exists so `npm start` on dev uses a
-> separate userData dir. The Mac release script below **reverts that one
-> line** post-merge so production builds use `folia-browser` again.
+> **About the folia-browser-dev rename:** commit `cca6770` set the package
+> name to `folia-browser-dev` for dev-userData isolation; a later commit
+> on dev (`0591a05`) restored it to `folia-browser` ahead of this
+> release. After the merge, `electron-app/package.json` will already have
+> `"name": "folia-browser"` — no manual revert needed. (If you re-instate
+> the dev rename later for further development, do it as a fresh commit
+> on dev after the release tag.)
 
 ---
 
@@ -88,24 +91,28 @@ If the merge has conflicts: **stop and ask the user**. Don't auto-resolve.
 
 ---
 
-## Step 2 — Revert the dev-only rename and bump version to 2.0.0
+## Step 2 — Bump version to 2.0.0
 
-The merge brings in commit `cca6770` which set the package name to
-`folia-browser-dev`. That was for dev userData isolation only — production
-builds must use `folia-browser` or the auto-updater (and existing installs)
-won't recognise the upgrade.
-
-Edit `electron-app/package.json`:
-- Set `"name": "folia-browser"` (was `"folia-browser-dev"` post-merge)
-- Set `"version": "2.0.0"` (was `"2.0.0-beta.3"`)
-
-Leave everything else as-is.
-
-Then:
+Confirm the package name is already correct (a dev-only commit had
+renamed it for userData isolation, but a later dev commit restored it):
 
 ```bash
 cd ~/Sync/coding_projects/tabless-browser
-git diff electron-app/package.json           # confirm: only name + version changed
+grep '"name"' electron-app/package.json       # must show "folia-browser" (NOT "folia-browser-dev")
+```
+
+If it still says `folia-browser-dev`, **stop and ask the user** — that
+means the dev branch's restore-name commit didn't make it through and
+shipping like this would break the auto-updater for existing installs.
+
+Edit `electron-app/package.json`:
+- Set `"version": "2.0.0"` (was `"2.0.0-beta.3"`)
+
+Leave everything else as-is. Then:
+
+```bash
+cd ~/Sync/coding_projects/tabless-browser
+git diff electron-app/package.json           # confirm: only version changed
 git add electron-app/package.json
 git commit -m "Folia Browser 2.0.0"
 ```
