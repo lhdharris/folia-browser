@@ -1,7 +1,7 @@
 {
   "name": "folia-browser",
   "version": "2.0.0-beta.3",
-  "description": "Folia Browser (Beta) — frameless single-page Electron browser. No tabs; every popup gets its own window. Widevine via Castlabs ECS.",
+  "description": "A browser with many limitations that will help you become happier and more virtuous — or at least more attentive to things other than the internet.",
   "main": "main.js",
   "author": {
     "name": "Louis Harris",
