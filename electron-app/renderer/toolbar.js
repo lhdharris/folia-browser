@@ -15,6 +15,14 @@ webview.setAttribute('preload', new URL('../webview-preload.js', location.href).
 // controls on macOS, where native traffic lights live in the titlebar).
 document.body.classList.add('platform-' + (window.wm?.platform || 'unknown'));
 
+// New windows cascade +32px from the opener, so the equivalent button in the
+// new window often lands right under the cursor and inherits :hover. Suppress
+// :hover until the user actually moves the mouse inside the new window.
+document.body.classList.add('no-hover');
+document.addEventListener('mousemove', () => {
+  document.body.classList.remove('no-hover');
+}, { once: true });
+
 const initialUrl = decodeURIComponent(location.hash.slice(1));
 const isBlank    = !initialUrl;
 
@@ -73,8 +81,11 @@ async function init() {
 
   if (isBlank) {
     // Blank window: show the URL bar and wait for the user to submit.
-    // The webview gets its partition + src only after the user navigates,
-    // and the URL bar is removed from the DOM after that — it cannot come back.
+    // The webview gets its partition + src only after the user navigates.
+    // body.blank-mode hides #webview-wrap so the back-button-restored
+    // blank state (which leaves a previously-loaded page parked in the
+    // webview) looks identical to a freshly opened window.
+    document.body.classList.add('blank-mode');
     urlBar.hidden = false;
     if (document.readyState === 'complete') urlBar.focus();
     else window.addEventListener('load', () => urlBar.focus());
@@ -106,6 +117,8 @@ async function init() {
 // hostname, so they share the `local-file` slot (still non-empty, so the
 // window gets registered and tinted alongside http windows).
 function startLoad(url) {
+  // Leaving blank-mode: reveal the webview so the new page is visible.
+  document.body.classList.remove('blank-mode');
   currentLoadedUrl = url;
   let hostname = 'default';
   try {
@@ -125,8 +138,17 @@ function startLoad(url) {
 // Keep currentLoadedUrl tracking the guest's actual URL across in-page
 // navigations (SPA history pushState, link clicks). Used by sticky shrink
 // to persist what to reload on next-launch lazy-restore.
+//
+// Back-navigation can land on the about:blank sentinel that restoreUrlBar
+// leaves behind (history becomes [about:blank, URL_NEW] after a restore
+// + new navigation). When that happens, surface the URL bar instead of
+// showing literal about:blank. The actionLabel guard prevents recursion
+// from restoreUrlBar's own setAttribute('src','about:blank').
 webview.addEventListener('did-navigate', (e) => {
   if (e.url) currentLoadedUrl = e.url;
+  if (e.url === 'about:blank' && actionLabel) {
+    restoreUrlBar('');
+  }
 });
 webview.addEventListener('did-navigate-in-page', (e) => {
   if (e.isMainFrame && e.url) currentLoadedUrl = e.url;
@@ -173,8 +195,44 @@ function shakeActionLabel(label) {
   setTimeout(() => label.classList.remove('shake-no'), 500);
 }
 
+// Pick hint colours that pop against the current toolbar background.
+// Read --toolbar-bg (set by applyToolbarColor) and emit complementary
+// pastel pairs. Returns null when there's no special toolbar tint (the
+// default grey case), and the CSS keyframe falls back to its built-in
+// green — same colours the breadcrumb used historically.
+function computeHintColors() {
+  const raw = getComputedStyle(document.documentElement)
+    .getPropertyValue('--toolbar-bg').trim();
+  if (!raw) return null;
+  if (raw.toLowerCase() === '#ffffe0') {
+    // Sticky-yellow lockedColor → cool blue/indigo pastel.
+    return { bg: '#bbdefb', fg: '#1565c0' };
+  }
+  const m = raw.match(/hsl\(\s*(-?\d+(?:\.\d+)?)\s*,\s*\d+(?:\.\d+)?%\s*,\s*\d+(?:\.\d+)?%\s*\)/i);
+  if (m) {
+    const h2 = ((Math.round(parseFloat(m[1])) % 360) + 540) % 360;  // +180° on the wheel
+    return {
+      bg: `hsl(${h2}, 60%, 85%)`,
+      fg: `hsl(${h2}, 55%, 28%)`,
+    };
+  }
+  return null;
+}
+
+function applyHintColors(el) {
+  const colors = computeHintColors();
+  if (colors) {
+    el.style.setProperty('--hint-bg', colors.bg);
+    el.style.setProperty('--hint-fg', colors.fg);
+  } else {
+    el.style.removeProperty('--hint-bg');
+    el.style.removeProperty('--hint-fg');
+  }
+}
+
 function flashMenuButtonGreen() {
   const btn = document.getElementById('menu');
+  applyHintColors(btn);
   btn.classList.remove('flash-green');
   void btn.offsetWidth;
   btn.classList.add('flash-green');
@@ -184,6 +242,7 @@ function flashMenuButtonGreen() {
 function flashNewWindowItemGreen() {
   const item = document.querySelector('#app-menu .item[data-action="new-window"]');
   if (!item) return;
+  applyHintColors(item);
   item.classList.remove('flash-green');
   void item.offsetWidth;
   item.classList.add('flash-green');
@@ -194,8 +253,20 @@ function flashNewWindowItemGreen() {
 // (either by placeStaticLabel for URL-opened windows or by the urlBar
 // Enter handler for blank windows). Listening on the parent catches both
 // paths without re-binding.
+//
+// During the redemption window (the first 5s after the URL bar is
+// swapped to a label) a click on the label hands the URL bar back with
+// the original input pre-filled, so the user can correct a typo. The
+// page underneath keeps loading; if the redemption click was accidental,
+// clicking back into the page (or pressing Esc) restores the label
+// without disturbing the in-flight load. After redemption ends, clicks
+// fall through to the "shake no" hint pattern.
 document.getElementById('drag-space').addEventListener('click', (e) => {
   if (!e.target.closest('#action-label')) return;
+  if (isRedemptionActive()) {
+    softRedeem(pendingInput || '');
+    return;
+  }
   urlBarShakeCount++;
   shakeActionLabel(e.target.closest('#action-label'));
   if (urlBarShakeCount >= 3) {
@@ -228,28 +299,137 @@ function actionLabelInfo(input) {
   return { verb: 'Searched for', text: `'${trimmed.toLowerCase()}'` };
 }
 
-urlBar.addEventListener('keydown', async (e) => {
-  if (e.key !== 'Enter') return;
-  const input = urlBar.value.trim();
-  if (!input) return;
-  const resolved = await window.wm.resolveUrl(input);
+// 5-second redemption: the URL bar swaps to the static action label
+// *immediately* on Enter (snappy aesthetics — no editable URL bar sitting
+// there for 3s). For the next 5 seconds the user can still undo the
+// commit if they typed a typo: pressing Enter, Backspace, or clicking
+// the label hands the URL bar back with the original input pre-filled
+// so they can correct and re-submit. The previously-committed page keeps
+// loading underneath — submitting a new URL aborts it mid-flight
+// (startLoad re-sets src), and a click into the page or Esc dismisses
+// the URL bar without touching the webview, so an accidental redemption
+// click is harmless.
+//
+// Document-level keydown only fires when focus is on the page chrome —
+// once the user clicks into the loaded page, the keystroke goes to the
+// webview's guest process (separate renderer) and the redemption
+// shortcut intentionally stops working.
+const REDEMPTION_MS = 5000;
+let redemptionTimer = null;
+let pendingInput   = null;   // user's raw input, for prefill on restore
+let urlBarSubmitting = false;
 
-  // Fade the URL bar out, swap in a static action label, fade that in.
-  // The swap runs once (transitionend wins normally; setTimeout is a fallback).
-  // Like the URL bar, the label is set once and never updates — subsequent
-  // in-page navigation doesn't change it.
-  const { verb, text } = actionLabelInfo(input);
-  actionVerb = verb;
-  actionLabel = text;
+function isRedemptionActive() {
+  return redemptionTimer !== null;
+}
+
+function startRedemption() {
+  clearTimeout(redemptionTimer);
+  redemptionTimer = setTimeout(endRedemption, REDEMPTION_MS);
+  document.addEventListener('keydown', onRedemptionKeydown, true);
+}
+
+function endRedemption() {
+  if (redemptionTimer != null) clearTimeout(redemptionTimer);
+  redemptionTimer = null;
+  document.removeEventListener('keydown', onRedemptionKeydown, true);
+}
+
+function onRedemptionKeydown(e) {
+  if (e.key !== 'Enter' && e.key !== 'Backspace') return;
+  // Skip if the user is typing into a real text field (e.g. the sticky
+  // comment area in sticky-mode, or the URL bar itself if it somehow
+  // got re-shown). The webview's guest renderer doesn't bubble keys up
+  // to this document, so we don't need to worry about page text fields.
+  const active = document.activeElement;
+  if (active && (
+    active.tagName === 'INPUT' ||
+    active.tagName === 'TEXTAREA' ||
+    active.isContentEditable
+  )) return;
+  e.preventDefault();
+  softRedeem(pendingInput || '');
+}
+
+// Soft redemption: URL bar shown in the toolbar slot while the previously-
+// committed page keeps loading in the webview underneath. Unlike the
+// back-button "exhausted history" path (restoreUrlBar), we don't stop the
+// webview or navigate to about:blank — actionVerb/actionLabel/
+// currentLoadedUrl are preserved so dismissing the URL bar can pop the
+// label back without a reload. Dismiss is either Esc inside the URL bar
+// or focus moving into the webview (user clicked on the page).
+let softRedemptionActive = false;
+
+function softRedeem(prefill) {
+  // The static 5s timer is for "click the label to recover the URL bar".
+  // Once the user has engaged with the URL bar, no longer in that window.
+  endRedemption();
+  softRedemptionActive = true;
+
+  const label = document.getElementById('action-label');
+  if (label) label.remove();
+
+  const parent = document.getElementById('drag-space');
+  urlBar.disabled = false;
+  urlBar.value = prefill || '';
+  urlBar.hidden = false;
+  if (!urlBar.isConnected) {
+    urlBar.classList.add('leaving');
+    parent.appendChild(urlBar);
+    void urlBar.offsetWidth;  // force reflow with .leaving applied
+    urlBar.classList.remove('leaving');
+  } else {
+    urlBar.classList.remove('leaving');
+  }
+  urlBar.focus();
+  if (prefill) urlBar.select();
+
+  document.addEventListener('keydown', onSoftRedemptionKeydown, true);
+  webview.addEventListener('focus', dismissSoftRedemption);
+}
+
+function onSoftRedemptionKeydown(e) {
+  if (e.key !== 'Escape') return;
+  e.preventDefault();
+  dismissSoftRedemption();
+}
+
+function dismissSoftRedemption() {
+  if (!softRedemptionActive) return;
+  clearSoftRedemptionState();
+  // Fade URL bar → label using the same swap as a fresh submit. The
+  // webview is untouched: actionVerb/actionLabel/currentLoadedUrl were
+  // preserved, so swapUrlBarToLabel re-renders the original label and
+  // the in-flight load just keeps going.
+  swapUrlBarToLabel();
+}
+
+function clearSoftRedemptionState() {
+  if (!softRedemptionActive) return;
+  softRedemptionActive = false;
+  document.removeEventListener('keydown', onSoftRedemptionKeydown, true);
+  webview.removeEventListener('focus', dismissSoftRedemption);
+}
+
+function swapUrlBarToLabel() {
+  if (!urlBar.isConnected) return;
+  // Disable so a stray Enter during the fade can't re-fire the handler.
+  urlBar.disabled = true;
   let swapped = false;
   const swap = () => {
     if (swapped) return;
     swapped = true;
+    // Guard against a redemption restore that fired while the fade was
+    // in flight — restoreUrlBar already removed .leaving and re-shown
+    // the bar, so don't yank it back out.
+    if (!urlBar.classList.contains('leaving')) return;
     const parent = urlBar.parentElement;
     if (urlBar.isConnected) urlBar.remove();
+    urlBar.disabled = false;
+    urlBar.classList.remove('leaving');
     const label = document.createElement('span');
     label.id = 'action-label';
-    label.textContent = text;
+    label.textContent = actionLabel;
     label.classList.add('entering');
     parent.appendChild(label);
     void label.offsetWidth;  // force reflow so the fade-in transitions
@@ -259,8 +439,93 @@ urlBar.addEventListener('keydown', async (e) => {
   urlBar.classList.add('leaving');
   urlBar.addEventListener('transitionend', swap, { once: true });
   setTimeout(swap, 400);
+}
 
-  startLoad(resolved);
+// Restore the blank URL-bar state: hard-reset to a clean blank window
+// (prefill='') from the back button when there's no webview history
+// left. Stops/unloads the previous page so media halts and the next
+// navigation starts from a clean slate. The redemption flow uses
+// softRedeem instead — it shows the URL bar without killing the page.
+function restoreUrlBar(prefill) {
+  // Guard re-entry from the did-navigate(about:blank) listener triggering
+  // ourselves recursively, plus the "already blank" case (initial state
+  // or a second back-press from the URL bar with empty history).
+  if (!actionLabel && urlBar.isConnected && !urlBar.classList.contains('leaving')) return;
+  clearSoftRedemptionState();
+  endRedemption();
+  urlBarSubmitting = false;
+  pendingInput = null;
+  const label = document.getElementById('action-label');
+  if (label) label.remove();
+
+  // Halt + unload. about:blank kills media and clears the visible page;
+  // the next startLoad replaces it. did-navigate may fire for the
+  // about:blank navigation, but with actionLabel cleared below the
+  // back-from-about-blank listener short-circuits.
+  try {
+    webview.stop();
+    if (currentLoadedUrl !== 'about:blank') {
+      webview.setAttribute('src', 'about:blank');
+    }
+  } catch {}
+
+  document.body.classList.add('blank-mode');
+  actionVerb = null;
+  actionLabel = null;
+  currentLoadedUrl = null;
+  document.title = 'Folia Browser';
+  stickyBtn.disabled = true;
+  urlBarShakeCount = 0;
+  hideWebviewError();
+  lockButton.hidden = true;
+  lockShownForHostname = null;
+  currentHostname = null;
+  activePermissions.clear();
+  updateLockIcon();
+
+  // Re-show the URL bar. If it's still in the DOM (restored during the
+  // swap fade) just reset its state; otherwise re-append with a fade-in
+  // mirroring the leaving animation.
+  const parent = document.getElementById('drag-space');
+  urlBar.disabled = false;
+  urlBar.value = prefill || '';
+  urlBar.hidden = false;
+  if (!urlBar.isConnected) {
+    urlBar.classList.add('leaving');
+    parent.appendChild(urlBar);
+    void urlBar.offsetWidth;  // force reflow with .leaving applied
+    urlBar.classList.remove('leaving');
+  } else {
+    urlBar.classList.remove('leaving');
+  }
+  urlBar.focus();
+  if (prefill) urlBar.select();
+  updateNav();
+}
+
+urlBar.addEventListener('keydown', async (e) => {
+  if (e.key !== 'Enter') return;
+  if (urlBarSubmitting) return;
+  const input = urlBar.value.trim();
+  if (!input) return;
+  urlBarSubmitting = true;
+  pendingInput = input;
+  // Drop soft-redemption listeners before re-arming: this submit replaces
+  // any in-flight load (startLoad re-sets src), so the dismiss path no
+  // longer applies to whatever was loading underneath.
+  clearSoftRedemptionState();
+  try {
+    const resolved = await window.wm.resolveUrl(input);
+    const { verb, text } = actionLabelInfo(input);
+    actionVerb = verb;
+    actionLabel = text;
+    startLoad(resolved);
+    swapUrlBarToLabel();
+    startRedemption();
+    updateNav();
+  } finally {
+    urlBarSubmitting = false;
+  }
 });
 
 // On dom-ready (guest has been created), force the guest page to
@@ -279,13 +544,26 @@ webview.addEventListener('page-title-updated', (e) => {
   if (t) document.title = `${t} — Folia Browser`;
 });
 
-// Navigation
-back.addEventListener('click', () => webview.goBack());
+// Navigation. Back keeps going through webview history; once the stack
+// is empty, one more click restores the blank URL-bar state — so the
+// user can keep pressing back "all the way" and end up with a fresh
+// address bar in the same window. forward is plain.
+back.addEventListener('click', () => {
+  if (webview.canGoBack()) {
+    webview.goBack();
+  } else if (actionLabel) {
+    restoreUrlBar('');
+  }
+});
 fwd.addEventListener('click',  () => webview.goForward());
 
 function updateNav() {
-  back.disabled = !webview.canGoBack();
-  fwd.disabled  = !webview.canGoForward();
+  // actionLabel is the "in loaded state" flag. In blank state both
+  // arrows are inert — webview is hidden behind the URL bar and the
+  // about:blank sentinel restoreUrlBar leaves behind in webview history
+  // would otherwise make canGoBack/canGoForward report stale truths.
+  back.disabled = !actionLabel;
+  fwd.disabled  = !actionLabel || !webview.canGoForward();
 }
 webview.addEventListener('did-navigate',         updateNav);
 webview.addEventListener('did-navigate-in-page', updateNav);
@@ -321,7 +599,78 @@ function progressFinish() {
 
 webview.addEventListener('did-start-loading', progressStart);
 webview.addEventListener('did-stop-loading',  progressFinish);
-webview.addEventListener('did-fail-load',     progressFinish);
+webview.addEventListener('did-fail-load', (e) => {
+  progressFinish();
+  showWebviewError(e);
+});
+webview.addEventListener('did-start-loading', hideWebviewError);
+
+// Minimalist failure overlay. Replaces Chromium's default error page so
+// the user sees a Folia-styled message in the toolbar's voice. Only the
+// most common codes get bespoke copy; everything else falls back to the
+// errorDescription Chromium hands us. User-initiated cancellations
+// (ERR_ABORTED) and sub-resource failures (isMainFrame === false) skip
+// the overlay so a clicked link that cancels mid-load doesn't blank the
+// page the user is currently looking at.
+const errorEl       = document.getElementById('webview-error');
+const errorTitleEl  = errorEl.querySelector('.webview-error-title');
+const errorDetailEl = errorEl.querySelector('.webview-error-detail');
+
+function hostFromUrl(u) {
+  try { return new URL(u).hostname; } catch { return u; }
+}
+
+function messageForFailure(evt) {
+  const host = hostFromUrl(evt.validatedURL || '');
+  const code = evt.errorCode;
+  const desc = (evt.errorDescription || '').replace(/^net::/i, '').replace(/_/g, ' ').toLowerCase();
+  if (code === -106) {
+    return { title: 'No internet connection', detail: 'Check your network and try again.' };
+  }
+  if (code === -105 || code === -137) {
+    return {
+      title: `Couldn't reach ${host || 'this site'}`,
+      detail: 'The address may be wrong, or your connection is offline.',
+    };
+  }
+  if (code === -109) {
+    return { title: 'Network unreachable', detail: "Your device can't reach the network right now." };
+  }
+  if (code === -118 || code === -7) {
+    return { title: `${host || 'This site'} took too long to respond` };
+  }
+  if (code === -501) {
+    return {
+      title: "This page isn't secure",
+      detail: 'The site is sending content over a plain HTTP connection.',
+    };
+  }
+  if (code <= -200 && code >= -299) {
+    return {
+      title: `${host || 'This site'}'s security certificate can't be verified`,
+      detail: desc,
+    };
+  }
+  return {
+    title: `Couldn't load ${host || 'this page'}`,
+    detail: desc,
+  };
+}
+
+function showWebviewError(evt) {
+  // Skip sub-resources and user-initiated cancellations.
+  if (evt.isMainFrame === false) return;
+  if (evt.errorCode === -3) return;  // ERR_ABORTED
+  const { title, detail } = messageForFailure(evt);
+  errorTitleEl.textContent = title;
+  errorDetailEl.textContent = detail || '';
+  errorDetailEl.hidden = !detail;
+  errorEl.hidden = false;
+}
+
+function hideWebviewError() {
+  if (!errorEl.hidden) errorEl.hidden = true;
+}
 
 // Window controls. The "minimize" slot has been replaced with the sticky-
 // note shrink (handled below); only close + maximize stay as plain wm calls.
@@ -405,8 +754,15 @@ window.addEventListener('resize', () => { if (!appMenu.hidden) positionAppMenu()
 // Download ring: shows progress for the most recently started download.
 // Click while in-progress → shake-red feedback ("wait"). Click after
 // completion → opens the file in its folder and hides the ring.
-const ringEl   = document.getElementById('download-ring');
-const ringFill = ringEl.querySelector('.fill');
+// Two parallel "rings": #download-ring in the toolbar, #sticky-download in
+// the sticky overlay. body.sticky-mode hides the toolbar (and therefore
+// the toolbar ring), so the sticky chip is what keeps the user informed
+// while a window is parked. Both share one state machine and one click
+// behaviour — every UI op iterates over `rings` so they stay in sync.
+const ringEls = [
+  document.getElementById('download-ring'),
+  document.getElementById('sticky-download'),
+].filter(Boolean);
 const RING_CIRC = 2 * Math.PI * 9;
 
 const ringState = {
@@ -417,27 +773,38 @@ const ringState = {
 };
 
 function setRingProgress(progress) {
-  ringFill.style.strokeDashoffset = String(RING_CIRC * (1 - progress));
+  const off = String(RING_CIRC * (1 - progress));
+  for (const el of ringEls) {
+    const fill = el.querySelector('.fill');
+    if (fill) fill.style.strokeDashoffset = off;
+  }
 }
 
-function showRing() {
+function showRing(titleText) {
   ringState.complete = false;
   ringState.progress = 0;
-  ringEl.classList.remove('complete');
-  ringEl.hidden = false;
+  for (const el of ringEls) {
+    el.classList.remove('complete');
+    el.hidden = false;
+    if (titleText) el.title = titleText;
+  }
   setRingProgress(0);
 }
 
 function completeRing(titleAfter) {
   ringState.complete = true;
-  ringEl.classList.add('complete');
-  ringEl.title = titleAfter;
+  for (const el of ringEls) {
+    el.classList.add('complete');
+    el.title = titleAfter;
+  }
   setRingProgress(1);
 }
 
 function hideRing() {
-  ringEl.hidden = true;
-  ringEl.classList.remove('complete');
+  for (const el of ringEls) {
+    el.hidden = true;
+    el.classList.remove('complete');
+  }
   ringState.id = null;
   ringState.complete = false;
   ringState.savePath = null;
@@ -445,10 +812,9 @@ function hideRing() {
 
 window.wm.onDownload((evt) => {
   if (evt.kind === 'started') {
-    showRing();
+    showRing(`Downloading ${evt.filename}…`);
     ringState.id = evt.id;
     ringState.savePath = null;
-    ringEl.title = `Downloading ${evt.filename}…`;
     return;
   }
   if (evt.id !== ringState.id) return;
@@ -467,19 +833,23 @@ window.wm.onDownload((evt) => {
   }
 });
 
-ringEl.addEventListener('click', () => {
+function handleRingClick(el) {
   if (!ringState.complete) {
-    ringEl.classList.remove('shake-red');
-    void ringEl.offsetWidth;  // restart animation if already running
-    ringEl.classList.add('shake-red');
-    setTimeout(() => ringEl.classList.remove('shake-red'), 400);
+    el.classList.remove('shake-red');
+    void el.offsetWidth;  // restart animation if already running
+    el.classList.add('shake-red');
+    setTimeout(() => el.classList.remove('shake-red'), 400);
     return;
   }
   if (ringState.savePath) {
     window.wm.showDownloadInFolder(ringState.savePath);
   }
   hideRing();
-});
+}
+
+for (const el of ringEls) {
+  el.addEventListener('click', () => handleRingClick(el));
+}
 
 // ---- Permissions UI ----------------------------------------------------
 // The lock button shows next to the menu button after a permission has been
@@ -712,6 +1082,11 @@ const stickyTitle     = document.getElementById('sticky-title');
 const stickyComment   = document.getElementById('sticky-comment');
 const stickyAudioIcon = document.getElementById('sticky-audio-icon');
 
+// Cross-fade duration when restoring from sticky. Kept in sync with the
+// opacity transition on #sticky-overlay.fading-out in style.css so the
+// timeout that hides the overlay fires right as the fade completes.
+const STICKY_FADE_MS = 260;
+
 // Sticky size scales with the global zoom setting (settings.zoom). Setting
 // --sticky-zoom on :root drives all internal padding/font/button sizes via
 // calc(... * var(--sticky-zoom)) in style.css. Window dimensions (set in
@@ -774,15 +1149,26 @@ async function restoreFromSticky() {
   // view. Hiding the overlay before the animation would show a tiny
   // squished toolbar+webview during the grow.
   const result = await window.wm.restoreFromSticky();
+  // Reveal the toolbar+webview underneath the still-opaque overlay, then
+  // cross-fade the overlay out. The .fading-out class transitions opacity
+  // 1 → 0 so the page appears through the sticky instead of snapping in.
+  // Without this two-step the user sees the window grow, then a hard cut
+  // from sticky-yellow to the page — visually jarring.
   document.body.classList.remove('sticky-mode');
-  stickyOverlay.hidden = true;
+  stickyOverlay.classList.add('fading-out');
   // Lazy-restored stickies carry a deferredUrl: the webview was created
   // src-less so we need to startLoad now that the window is full size.
   // Defer-loading from a still-shrunken webview triggers the
-  // layout-too-small bug guarded by startLoad's setTimeout(50ms).
+  // layout-too-small bug guarded by startLoad's setTimeout(50ms). Kick
+  // the load off while the overlay is fading so the blank → page paint
+  // lands underneath the cross-fade.
   if (result?.deferredUrl) {
     startLoad(result.deferredUrl);
   }
+  setTimeout(() => {
+    stickyOverlay.hidden = true;
+    stickyOverlay.classList.remove('fading-out');
+  }, STICKY_FADE_MS);
 }
 
 // Comment edits during sticky-mode: persist live (debounced) so the saved

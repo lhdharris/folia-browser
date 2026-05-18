@@ -2,13 +2,19 @@ const { app, BrowserWindow, Menu, ipcMain, session, dialog, shell, clipboard, co
 const path = require('path');
 const fs   = require('fs');
 const { pathToFileURL } = require('url');
-const { checkForUpdates } = require('./updater');
+const { startUpdateChecks } = require('./updater');
 
 // macOS menu bar shows the app name in the bold leftmost menu ("About …",
-// "Hide …", "Quit …"). Electron derives that from app.getName(), which in dev
-// falls back to package.json's `name` ("folia-browser"). Force the pretty
-// display name so dev and packaged builds match.
-app.setName('Folia Browser');
+// "Hide …", "Quit …"). Electron derives that from app.getName(), which in
+// dev falls back to package.json's `name`. Force the pretty display name
+// for packaged builds; in unpackaged dev (npm start) use a distinct name
+// so userData (and the single-instance lock that piggybacks on it) lives
+// at ~/.config/Folia Browser (dev)/ instead of ~/.config/Folia Browser/.
+// Without this gate, `npm start` while a packaged Folia is also running
+// loses its single-instance race, exits, and forwards its argv to the
+// packaged Folia — which is why "test the dev build" silently opens a
+// window in the real install instead.
+app.setName(app.isPackaged ? 'Folia Browser' : 'Folia Browser (dev)');
 
 // Widevine is provided by Castlabs Electron-for-Content (the `electron` dep
 // is their VMP-signed fork, see DRM_SETUP.md). The CDM is installed by
@@ -147,16 +153,23 @@ function stickyBoundsFor(cur) {
   };
 }
 
-// Wayland alwaysOnTop is best-effort: compositors honour the level hint
-// in different ways, and some reset it on bounds changes. Belt-and-braces:
-// 'screen-saver' (highest level) + setVisibleOnAllWorkspaces, applied
-// before AND after the bounds animation so the WM picks it up regardless
-// of which order it processes the events.
+// Stickies are pinned per-workspace across all platforms: a sticky stays
+// on whichever virtual desktop / macOS Space / Windows virtual desktop it
+// was created on, and switching workspaces leaves it behind. This matches
+// the physical "post-it on the wall" mental model.
+//
+// alwaysOnTop is the floating-above-other-windows hint. 'screen-saver' is
+// the highest level Electron exposes and is the only one Mutter / KWin
+// reliably honour on Wayland. The double-apply (callsite calls
+// pinStickyOnTop both before and after animateBounds) is for Wayland too:
+// some compositors drop the level on configure events, so re-asserting
+// after the resize settles is belt-and-braces. macOS / Windows honour the
+// first call and the second one is a harmless no-op.
 function pinStickyOnTop(win) {
   if (win.isDestroyed()) return;
   win.setAlwaysOnTop(true, 'screen-saver');
   try {
-    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    win.setVisibleOnAllWorkspaces(false, { visibleOnFullScreen: true });
   } catch {}
 }
 
@@ -279,9 +292,24 @@ function recomputeHues() {
     // Solo window: drop any pastel hue. lockedColor entries (e.g. sticky-yellow)
     // are left intact — that's the whole point of the lock, and the renderer
     // keeps painting the locked colour.
+    //
+    // Special case: if the lone survivor is a sticky carrying a multi-window
+    // pastel hue (e.g. red, inherited from a now-closed group), freeze the
+    // current colour as a lockedColor so the sticky doesn't drop its tint
+    // mid-park just because its siblings went away. The restore handler
+    // clears lockedColor unconditionally, so maximizing the sticky returns
+    // it to the normal solo-window grey.
     for (const [id, info] of entries) {
       if (info.lockedColor) continue;
       if (info.hue !== null) {
+        const w = BrowserWindow.fromId(id);
+        if (w && !w.isDestroyed() && w._sticky) {
+          info.lockedColor = `hsl(${info.hue}, 50%, 90%)`;
+          info.hue = null;
+          // No broadcast: colorForEntry now returns the same string the
+          // renderer was already painting, so nothing visible changes.
+          continue;
+        }
         info.hue = null;
         sendColorToWindow(id, null);
       }
@@ -977,14 +1005,21 @@ async function eachSession() {
 
 let downloadCounter = 0;
 
-// One-shot owner hint for downloads started from the main process (the
-// updater, currently). will-download fires with `wc` set to the session's
-// own webContents, not a guest, so findOwningWindow returns null. The
-// updater calls setPendingDownloadOwner(win) right before downloadURL so
-// the next will-download event can attribute progress to that window's UI.
+// One-shot hint for downloads started from the main process (the updater,
+// currently). will-download fires with `wc` set to the session's own
+// webContents, not a guest, so findOwningWindow returns null. The updater
+// calls setPendingDownloadOwner(win, opts) right before downloadURL so the
+// next will-download event can attribute progress to that window's UI,
+// override the save path (e.g. to userData/updates/ so installers don't
+// pile up in the user's Downloads folder), and hook in a completion
+// callback (e.g. to prompt "install now?" once the installer has landed).
 let pendingDownloadOwner = null;
-function setPendingDownloadOwner(win) {
+let pendingDownloadSavePath = null;
+let pendingDownloadOnComplete = null;
+function setPendingDownloadOwner(win, opts = {}) {
   pendingDownloadOwner = win && !win.isDestroyed() ? win : null;
+  pendingDownloadSavePath = typeof opts.savePath === 'string' ? opts.savePath : null;
+  pendingDownloadOnComplete = typeof opts.onComplete === 'function' ? opts.onComplete : null;
 }
 
 function attachDownloadHandler(sess) {
@@ -1001,9 +1036,15 @@ function attachDownloadHandler(sess) {
     // started, user closed the window, then it finished), the event is just
     // dropped — the file still saves, no UI gets updated.
     let ownerWin = findOwningWindow(wc);
+    let savePathOverride = null;
+    let onCompleteHook = null;
     if (!ownerWin && pendingDownloadOwner && !pendingDownloadOwner.isDestroyed()) {
       ownerWin = pendingDownloadOwner;
+      savePathOverride = pendingDownloadSavePath;
+      onCompleteHook = pendingDownloadOnComplete;
       pendingDownloadOwner = null;
+      pendingDownloadSavePath = null;
+      pendingDownloadOnComplete = null;
     }
     const sendToOwner = (payload) => {
       if (ownerWin && !ownerWin.isDestroyed()) {
@@ -1011,7 +1052,10 @@ function attachDownloadHandler(sess) {
       }
     };
 
-    if (!settings.askDownloadPath) {
+    if (savePathOverride) {
+      try { fs.mkdirSync(path.dirname(savePathOverride), { recursive: true }); } catch {}
+      item.setSavePath(savePathOverride);
+    } else if (!settings.askDownloadPath) {
       const target = uniqueDownloadPath(effectiveDownloadDir(), filename);
       try { fs.mkdirSync(path.dirname(target), { recursive: true }); } catch {}
       item.setSavePath(target);
@@ -1032,6 +1076,9 @@ function attachDownloadHandler(sess) {
     item.on('done', (_e, state) => {
       if (state === 'completed') {
         sendToOwner({ kind: 'done', id, filename, savePath: item.getSavePath() });
+        if (onCompleteHook) {
+          try { onCompleteHook(item.getSavePath()); } catch {}
+        }
       } else {
         sendToOwner({ kind: 'failed', id, state });
       }
@@ -1132,17 +1179,22 @@ ipcMain.handle('wm-sticky-restore', async (e) => {
   // dblclick-maximize.
   unlockStickySize(win);
 
-  // Restore-to-grey: if this window is alone (no siblings), drop the
-  // sticky-yellow lock so the toolbar reverts to default. If there are
-  // siblings, keep the lock — yellow stays yellow alongside coloured
-  // siblings (matches the original "yellow stays yellow" rule).
+  // Restore drops the sticky-yellow lock unconditionally — once the window
+  // is back in browse mode, normal hue rules take over. recomputeHues then
+  // either assigns a pastel hue (if there are sibling windows registered
+  // in windowHues) or leaves the hue null for a solo window. The earlier
+  // "yellow stays yellow when restored with siblings" rule leaked the lock
+  // when a fresh blank sibling existed but hadn't navigated yet — the
+  // sibling wasn't in windowHues (no hostname), but BrowserWindow count
+  // was > 1, so the clear was skipped and the yellow persisted forever.
   const info = windowHues.get(win.id);
-  if (info?.lockedColor && BrowserWindow.getAllWindows().length === 1) {
+  if (info?.lockedColor) {
     info.lockedColor = null;
-    info.hue = null;
-    // Broadcast directly: recomputeHues' "no tint" branch only sends when
-    // hue actually changed, so a null→null transition wouldn't fire.
-    sendColorToWindow(win.id, null);
+    recomputeHues();
+    // Solo-window case: recomputeHues won't broadcast (null hue → null hue
+    // is a no-op in its solo branch), so push the clear explicitly so the
+    // renderer drops the locked yellow back to the grey default.
+    if (info.hue === null) sendColorToWindow(win.id, null);
   }
 
   await animateBounds(win, target, STICKY_ANIM_MS);
@@ -1448,8 +1500,11 @@ if (!gotLock) {
     // GitHub Releases auto-updater. Skipped in dev (the updater checks
     // app.isPackaged itself). Delayed a few seconds so the first window can
     // finish laying out before a modal native dialog might pop on top of it.
+    // startUpdateChecks fires the initial check and then re-polls on an
+    // interval so pre-releases published mid-session get picked up without
+    // requiring an app restart.
     setTimeout(() => {
-      checkForUpdates({ onStartDownload: setPendingDownloadOwner }).catch(() => {});
+      startUpdateChecks({ onStartDownload: setPendingDownloadOwner });
     }, 3000);
   });
 
