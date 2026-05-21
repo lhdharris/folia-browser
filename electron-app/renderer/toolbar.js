@@ -59,6 +59,11 @@ let actionLabel = null;  // hostname / "'query'" — same string used by #action
 // updated on did-navigate(-in-page); read at sticky-shrink time so main can
 // persist what URL to reload on lazy-restore.
 let currentLoadedUrl = null;
+// Latest <title> from the guest page. Stickies show this as their title
+// (the page itself) rather than the hostname/query the URL bar shows. Set
+// by the page-title-updated listener and reset on did-navigate (new page,
+// old title is stale until the new page sends one).
+let pageTitle = null;
 
 async function init() {
   // Sticky-note persistence: if main reports this is a lazy-restored
@@ -70,6 +75,7 @@ async function init() {
     actionVerb  = initState.verb || null;
     actionLabel = initState.label || null;
     currentLoadedUrl = initState.url || null;
+    pageTitle = initState.pageTitle || null;
     if (actionLabel) placeStaticLabel(actionLabel);
     enableStickyButton();
     stickyTitle.textContent = composeStickyTitle();
@@ -539,9 +545,27 @@ webview.addEventListener('dom-ready', () => {
 // instead of every Folia window saying "Folia Browser". Electron's BrowserWindow
 // auto-syncs from document.title via its own page-title-updated event. Skip
 // empties — keep the static "Folia Browser" fallback from index.html.
+//
+// Also stash the raw title for the sticky overlay (the URL bar still shows
+// origin/query; a sticky shows the page itself). If the user has already
+// shrunken the window, refresh the visible sticky title — the title can
+// arrive after shrink if the user parks a still-loading page.
 webview.addEventListener('page-title-updated', (e) => {
   const t = (e.title || '').trim();
-  if (t) document.title = `${t} — Folia Browser`;
+  if (t) {
+    document.title = `${t} — Folia Browser`;
+    pageTitle = t;
+    if (document.body.classList.contains('sticky-mode')) {
+      stickyTitle.textContent = composeStickyTitle();
+      window.wm.updateStickyTitle(t);
+    }
+  }
+});
+
+// New top-level navigation invalidates the previous page's title. Clear so
+// the sticky doesn't show stale text until the new page sends a title.
+webview.addEventListener('did-navigate', () => {
+  pageTitle = null;
 });
 
 // Navigation. Back keeps going through webview history; once the stack
@@ -1182,8 +1206,9 @@ function enableStickyButton() {
 }
 
 function composeStickyTitle() {
-  if (!actionVerb || !actionLabel) return 'Untitled window';
-  return `${actionVerb} ${actionLabel}`;
+  if (pageTitle) return pageTitle;
+  if (actionVerb && actionLabel) return `${actionVerb} ${actionLabel}`;
+  return 'Untitled window';
 }
 
 function placeCursorAtEnd(el) {
@@ -1220,10 +1245,11 @@ stickyBtn.addEventListener('click', async () => {
   // *after* the visual settles. Payload is what main persists for next-
   // launch lazy-restore (URL to defer-load, title parts, comment text).
   await window.wm.shrinkToSticky({
-    url:     currentLoadedUrl,
-    verb:    actionVerb,
-    label:   actionLabel,
-    comment: stickyComment.textContent || '',
+    url:       currentLoadedUrl,
+    verb:      actionVerb,
+    label:     actionLabel,
+    pageTitle,
+    comment:   stickyComment.textContent || '',
   });
   stickyComment.focus();
   placeCursorAtEnd(stickyComment);

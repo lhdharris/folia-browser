@@ -486,15 +486,16 @@ function saveStickiesNow() {
     if (w.isDestroyed() || !w._sticky) continue;
     const info = windowHues.get(w.id);
     entries.push({
-      url:            w._sticky.url     || null,
-      verb:           w._sticky.verb    || null,
-      label:          w._sticky.label   || null,
-      comment:        w._sticky.comment || '',
+      url:            w._sticky.url       || null,
+      verb:           w._sticky.verb      || null,
+      label:          w._sticky.label     || null,
+      pageTitle:      w._sticky.pageTitle || null,
+      comment:        w._sticky.comment   || '',
       originalBounds: w._sticky.originalBounds,
       stickyBounds:   w._sticky.stickyBounds,
       wasMaximized:   !!w._sticky.wasMaximized,
-      lockedColor:    info?.lockedColor || null,
-      hostname:       info?.hostname    || null,
+      lockedColor:    info?.lockedColor   || null,
+      hostname:       info?.hostname      || null,
     });
   }
   try {
@@ -668,6 +669,7 @@ function createWindow(url, opener, options = {}) {
       url:            restore.url,
       verb:           restore.verb,
       label:          restore.label,
+      pageTitle:      restore.pageTitle || null,
       comment:        restore.comment || '',
       deferredUrl:    restore.url,
       lazy:           true,
@@ -1023,6 +1025,7 @@ function createWindow(url, opener, options = {}) {
     if (!isQuitting) {
       const url = win._sticky?.url || win._lastUrl || null;
       const title =
+        win._sticky?.pageTitle ||
         win._lastPageTitle ||
         (win._sticky?.verb && win._sticky?.label
           ? `${win._sticky.verb} ${win._sticky.label}`
@@ -1309,10 +1312,11 @@ ipcMain.handle('wm-sticky-shrink', async (e, payload = {}) => {
     originalBounds,
     stickyBounds,
     wasMaximized,
-    url:     payload.url     || null,
-    verb:    payload.verb    || null,
-    label:   payload.label   || null,
-    comment: payload.comment || '',
+    url:       payload.url       || null,
+    verb:      payload.verb      || null,
+    label:     payload.label     || null,
+    pageTitle: payload.pageTitle || null,
+    comment:   payload.comment   || '',
   };
 
   // Lone window with no hue → freeze its colour to the sticky-yellow so it
@@ -1409,6 +1413,16 @@ ipcMain.on('wm-sticky-update-comment', (e, comment) => {
   scheduleSaveStickies();
 });
 
+// Page title arriving (or changing) while the window is stickied — keep the
+// persisted snapshot fresh so the next launch's lazy-restore shows the
+// latest page title without having to load the URL.
+ipcMain.on('wm-sticky-update-title', (e, pageTitle) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  if (!win || !win._sticky) return;
+  win._sticky.pageTitle = typeof pageTitle === 'string' ? pageTitle : null;
+  scheduleSaveStickies();
+});
+
 // First-render bootstrap: the renderer queries this on init to decide
 // whether it's a fresh window (URL hash or blank) or a lazy-restored sticky
 // that needs its overlay painted from saved state. Reads _sticky directly so
@@ -1417,11 +1431,12 @@ ipcMain.handle('get-init-state', (e) => {
   const win = BrowserWindow.fromWebContents(e.sender);
   if (!win?._sticky?.lazy) return { lazy: false };
   return {
-    lazy:    true,
-    url:     win._sticky.url,
-    verb:    win._sticky.verb,
-    label:   win._sticky.label,
-    comment: win._sticky.comment || '',
+    lazy:      true,
+    url:       win._sticky.url,
+    verb:      win._sticky.verb,
+    label:     win._sticky.label,
+    pageTitle: win._sticky.pageTitle || null,
+    comment:   win._sticky.comment || '',
   };
 });
 

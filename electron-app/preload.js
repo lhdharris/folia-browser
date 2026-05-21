@@ -18,6 +18,9 @@ contextBridge.exposeInMainWorld('wm', {
   // Renderer pushes comment edits live (debounced) so the persisted file
   // tracks every typed character without main having to poll.
   updateStickyComment: (comment) => ipcRenderer.send('wm-sticky-update-comment', comment),
+  // Page title arriving after shrink updates the persisted sticky title so
+  // lazy-restore on next launch shows the latest page name without loading.
+  updateStickyTitle: (pageTitle) => ipcRenderer.send('wm-sticky-update-title', pageTitle),
   // First-render bootstrap. Returns {lazy: false} for fresh windows; for a
   // lazy-restored sticky returns {lazy: true, url, verb, label, comment}
   // so the renderer can paint the overlay without loading the URL.
