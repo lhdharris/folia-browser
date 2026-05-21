@@ -1126,6 +1126,21 @@ function placeCursorAtEnd(el) {
 
 stickyBtn.addEventListener('click', async () => {
   if (stickyBtn.disabled) return;
+
+  // If the user has text selected on the page when they click sticky,
+  // seed the comment with the selection — a frictionless "quote the
+  // thing I wanted to remember" gesture. Only prefill when the comment
+  // is empty: don't clobber a comment that's already been typed across
+  // previous shrink cycles (the overlay stays in the DOM, so its text
+  // persists across sticky/restore round-trips within a window's life).
+  if (!(stickyComment.textContent || '').trim()) {
+    try {
+      const selection = await webview.executeJavaScript('window.getSelection().toString()');
+      const trimmed = (selection || '').trim();
+      if (trimmed) stickyComment.textContent = trimmed;
+    } catch {}
+  }
+
   stickyTitle.textContent = composeStickyTitle();
   stickyOverlay.hidden = false;
   document.body.classList.add('sticky-mode');
