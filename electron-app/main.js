@@ -406,18 +406,33 @@ const ANIM_TICK_MS = 30;
 function animateBounds(win, target, ms) {
   return new Promise((resolve) => {
     if (win.isDestroyed()) return resolve();
+    // Flag so move-event listeners can distinguish "programmatic animation
+    // tick" from "user dragged the window". Without this, the restore
+    // animation's setBounds ticks would fire move events that look exactly
+    // like a user drag, and the sticky-position memory below would get
+    // wiped mid-animation. The flag stays true for an extra 250ms after
+    // the animation logically ends — Wayland compositors sometimes fire
+    // a few additional `move` events as the window settles, which would
+    // otherwise look like a user drag the moment the animation completes.
+    win._animating = true;
+    const done = () => {
+      resolve();
+      setTimeout(() => {
+        if (!win.isDestroyed()) win._animating = false;
+      }, 250);
+    };
     if (process.platform === 'darwin') {
       // Native macOS animation. No completion callback exposed by Electron,
       // so resolve after the requested duration — close enough for the
       // renderer's "focus comment after shrink" sequencing.
       win.setBounds(target, true);
-      setTimeout(resolve, ms);
+      setTimeout(done, ms);
       return;
     }
     const start = win.getBounds();
     const t0 = Date.now();
     const tick = () => {
-      if (win.isDestroyed()) return resolve();
+      if (win.isDestroyed()) return done();
       const elapsed = Date.now() - t0;
       const t = Math.min(1, elapsed / ms);
       const eased = 1 - Math.pow(1 - t, 3);
@@ -428,7 +443,7 @@ function animateBounds(win, target, ms) {
         height: Math.round(start.height + (target.height - start.height) * eased),
       });
       if (t < 1) setTimeout(tick, ANIM_TICK_MS);
-      else resolve();
+      else done();
     };
     tick();
   });
@@ -830,31 +845,49 @@ function createWindow(url, opener, options = {}) {
     win.webContents.send('sticky-restore-requested');
   });
 
-  // Stickies persistence: every drag of a parked sticky updates its saved
-  // position so the next launch puts it back exactly where the user left it.
-  // `move` fires throughout the drag on Linux/Windows; `moved` fires once at
-  // the end on macOS — debounce dedupes both. Guard on _sticky so non-sticky
-  // window moves don't hammer the disk.
+  // Move tracking serves two related jobs:
   //
-  // `trackMoves` is gated on `show` + 250ms settle: on Wayland the
-  // compositor ignores our initial x/y hints and places the window where
-  // it wants, firing `move` events as it does so. Without this gate, the
-  // WM-placed position would immediately overwrite the saved bounds for
-  // every lazy-restored sticky. After the window settles, only real user
-  // drags fire the listener.
+  //  1. Sticky drag → persist new position so next launch puts the sticky
+  //     back exactly where the user left it. Also mirrored into
+  //     win._lastStickyBounds so a subsequent restore-then-reshrink cycle
+  //     re-uses the same on-screen spot (the user said "the sticky lives
+  //     over here, not wherever the toolbar's top-left happens to be").
+  //
+  //  2. Full-size drag (window is NOT sticky) → clear _lastStickyBounds.
+  //     The user moved the window as a whole, so the previous sticky
+  //     position is no longer where they expect the sticky to reappear;
+  //     fall back to "shrink in place at the new top-left" next shrink.
+  //
+  // Gates:
+  //   - `trackMoves` is false until show + 250ms. On Wayland the
+  //     compositor ignores our initial x/y hint and fires move events as
+  //     it places the window; without the gate, that WM placement would
+  //     immediately overwrite saved bounds for every lazy-restored sticky.
+  //   - `win._animating` (set by animateBounds) suppresses the listener
+  //     during shrink/restore animations — the setBounds ticks fire move
+  //     events that would otherwise look like a user drag and clobber
+  //     either persistence target.
+  //
+  // `move` fires throughout the drag on Linux/Windows; `moved` fires once
+  // at the end on macOS — both bind so platforms see at least one event.
   let trackMoves = false;
   win.once('show', () => {
     setTimeout(() => { trackMoves = true; }, 250);
   });
-  const trackStickyMove = () => {
+  const trackMove = () => {
     if (!trackMoves) return;
-    if (win.isDestroyed() || !win._sticky) return;
-    const b = win.getBounds();
-    win._sticky.stickyBounds = { x: b.x, y: b.y, width: b.width, height: b.height };
-    scheduleSaveStickies();
+    if (win.isDestroyed() || win._animating) return;
+    if (win._sticky) {
+      const b = win.getBounds();
+      win._sticky.stickyBounds = { x: b.x, y: b.y, width: b.width, height: b.height };
+      win._lastStickyBounds = { x: b.x, y: b.y };
+      scheduleSaveStickies();
+    } else {
+      win._lastStickyBounds = null;
+    }
   };
-  win.on('move', trackStickyMove);
-  win.on('moved', trackStickyMove);
+  win.on('move', trackMove);
+  win.on('moved', trackMove);
 
   win.on('closed', () => {
     unregisterWindow(win.id);
@@ -1115,7 +1148,21 @@ ipcMain.handle('wm-sticky-shrink', async (e, payload = {}) => {
   const wasMaximized = win.isMaximized();
   if (wasMaximized) win.unmaximize();
   const originalBounds = win.getBounds();
-  const stickyBounds = stickyBoundsFor(originalBounds);
+  // Prefer the position the sticky was at last cycle (captured on restore /
+  // updated during sticky drags). If the user has since moved the full-size
+  // window, win._lastStickyBounds was cleared by the move tracker — we fall
+  // through to the default "shrink in place at the current top-left" path.
+  // Clamp to the current display's work area so a remembered position from
+  // a now-disconnected monitor doesn't strand the sticky off-screen.
+  const sized = stickyBoundsFor(originalBounds);
+  const stickyBounds = win._lastStickyBounds
+    ? clampBoundsToDisplay({
+        x: win._lastStickyBounds.x,
+        y: win._lastStickyBounds.y,
+        width:  sized.width,
+        height: sized.height,
+      })
+    : sized;
   // stickyBounds is stored so the maximize-intercept handler can reset to
   // the exact target size. On Wayland, repeated unmaximize() calls drift
   // by a few pixels each cycle (compositor frame inset accounting), which
@@ -1172,6 +1219,11 @@ ipcMain.handle('wm-sticky-restore', async (e) => {
   // bug guarded by the comment in renderer/toolbar.js).
   const deferredUrl = win._sticky.deferredUrl || null;
   const wasMaximized = win._sticky.wasMaximized;
+  // Remember where the sticky was sitting (post-user-drags) so the next
+  // shrink cycle reuses that spot. The move tracker clears this if the
+  // user drags the restored full-size window before re-shrinking.
+  const sb = win._sticky.stickyBounds;
+  win._lastStickyBounds = sb ? { x: sb.x, y: sb.y } : null;
   win._sticky = null;
   unpinStickyOnTop(win);
 
