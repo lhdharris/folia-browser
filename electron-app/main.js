@@ -158,16 +158,17 @@ function stickyBoundsFor(cur) {
 // was created on, and switching workspaces leaves it behind. This matches
 // the physical "post-it on the wall" mental model.
 //
-// alwaysOnTop is the floating-above-other-windows hint. 'screen-saver' is
-// the highest level Electron exposes and is the only one Mutter / KWin
-// reliably honour on Wayland. The double-apply (callsite calls
-// pinStickyOnTop both before and after animateBounds) is for Wayland too:
-// some compositors drop the level on configure events, so re-asserting
-// after the resize settles is belt-and-braces. macOS / Windows honour the
-// first call and the second one is a harmless no-op.
+// alwaysOnTop is the floating-above-other-windows hint. 'floating' sits
+// above normal windows but BELOW the OS menu bar / taskbar / notification
+// area on macOS and Windows — the user wants stickies to live as desktop
+// post-its, not chrome that obscures the system tray. The double-apply
+// (callsite calls pinStickyOnTop both before and after animateBounds) is
+// for Wayland: some compositors drop the level on configure events, so
+// re-asserting after the resize settles is belt-and-braces. macOS /
+// Windows honour the first call and the second one is a harmless no-op.
 function pinStickyOnTop(win) {
   if (win.isDestroyed()) return;
-  win.setAlwaysOnTop(true, 'screen-saver');
+  win.setAlwaysOnTop(true, 'floating');
   try {
     win.setVisibleOnAllWorkspaces(false, { visibleOnFullScreen: true });
   } catch {}
