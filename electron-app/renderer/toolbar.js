@@ -683,6 +683,8 @@ document.getElementById('maximize').addEventListener('click', () => window.wm.to
 const menuBtn = document.getElementById('menu');
 const appMenu = document.getElementById('app-menu');
 const appMenuBackdrop = document.getElementById('app-menu-backdrop');
+const closedFoliasItem = appMenu.querySelector('.item[data-action="closed-folias"]');
+const closedSubmenu = document.getElementById('closed-folias-submenu');
 
 // Render keyboard-accelerator hints based on platform (⌘R on macOS, Ctrl+R
 // elsewhere). The keys themselves still come from Chromium's defaults; the
@@ -703,6 +705,7 @@ function positionAppMenu() {
 function closeAppMenu() {
   appMenu.hidden = true;
   appMenuBackdrop.hidden = true;
+  hideClosedSubmenu();
 }
 
 async function openAppMenu() {
@@ -720,6 +723,61 @@ async function openAppMenu() {
   if (urlBarShakeCount >= 3) flashNewWindowItemGreen();
 }
 
+// Fly-out submenu for "Previously closed Folias". Click the parent item
+// to toggle; clicking another item in the parent menu (via the hover-close
+// below) or clicking the backdrop dismisses both. Submenu z-index sits
+// above the parent so its items receive clicks without bleeding through.
+function positionClosedSubmenu() {
+  const itemRect = closedFoliasItem.getBoundingClientRect();
+  const menuRect = appMenu.getBoundingClientRect();
+  closedSubmenu.style.left = Math.round(menuRect.right + 4) + 'px';
+  closedSubmenu.style.top  = Math.round(itemRect.top) + 'px';
+}
+
+function hideClosedSubmenu() {
+  closedSubmenu.hidden = true;
+  closedSubmenu.replaceChildren();
+  closedFoliasItem.classList.remove('open');
+}
+
+async function showClosedSubmenu() {
+  const entries = await window.wm.getClosedFolias();
+  closedSubmenu.replaceChildren();
+  if (!entries || entries.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'empty';
+    empty.textContent = 'No recently closed Folias';
+    closedSubmenu.appendChild(empty);
+  } else {
+    for (const entry of entries) {
+      const btn = document.createElement('button');
+      btn.className = 'item';
+      btn.textContent = entry.title && entry.title.trim() ? entry.title : entry.url;
+      btn.title = entry.url;
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        closeAppMenu();
+        window.wm.openClosedFolia(entry.url);
+      });
+      closedSubmenu.appendChild(btn);
+    }
+  }
+  closedSubmenu.hidden = false;
+  closedFoliasItem.classList.add('open');
+  positionClosedSubmenu();
+}
+
+// Hovering a sibling menu item while the submenu is open closes the
+// submenu, mirroring native menu behaviour ("highlight moved on").
+// Excludes the parent item itself so hovering over it doesn't slam the
+// submenu shut.
+appMenu.addEventListener('mouseover', (e) => {
+  if (closedSubmenu.hidden) return;
+  const item = e.target.closest('.item');
+  if (!item || item === closedFoliasItem) return;
+  hideClosedSubmenu();
+});
+
 // Backdrop click closes the menu. Clicks inside the webview otherwise never
 // bubble out to the toolbar's document; the backdrop catches them first.
 appMenuBackdrop.addEventListener('mousedown', closeAppMenu);
@@ -733,6 +791,14 @@ menuBtn.addEventListener('click', (e) => {
 appMenu.addEventListener('click', (e) => {
   const item = e.target.closest('.item');
   if (!item || item.disabled) return;
+  // "Previously closed Folias" toggles a nested submenu rather than
+  // dispatching to main — the action is local UI state, the activation
+  // happens when the user clicks an entry inside the submenu.
+  if (item.dataset.action === 'closed-folias') {
+    if (closedSubmenu.hidden) showClosedSubmenu();
+    else hideClosedSubmenu();
+    return;
+  }
   closeAppMenu();
   window.wm.appMenuAction(item.dataset.action);
   // Following the green-breadcrumb resets the URL-bar-click hint on
@@ -743,13 +809,18 @@ appMenu.addEventListener('click', (e) => {
 document.addEventListener('mousedown', (e) => {
   if (appMenu.hidden) return;
   if (appMenu.contains(e.target) || menuBtn.contains(e.target)) return;
+  if (closedSubmenu.contains(e.target)) return;
   closeAppMenu();
 });
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !appMenu.hidden) closeAppMenu();
 });
 webview.addEventListener('focus', () => { if (!appMenu.hidden) closeAppMenu(); });
-window.addEventListener('resize', () => { if (!appMenu.hidden) positionAppMenu(); });
+window.addEventListener('resize', () => {
+  if (appMenu.hidden) return;
+  positionAppMenu();
+  if (!closedSubmenu.hidden) positionClosedSubmenu();
+});
 
 // Download ring: shows progress for the most recently started download.
 // Click while in-progress → shake-red feedback ("wait"). Click after

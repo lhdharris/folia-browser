@@ -29,6 +29,10 @@ const SETTINGS_PATH = path.join(app.getPath('userData'), 'settings.json');
 // re-create a lazy sticky on next launch (URL deferred until restore — see
 // the "Sticky-window persistence" section below).
 const STICKIES_PATH = path.join(app.getPath('userData'), 'stickies.json');
+// Recently-closed windows, listed in the toolbar dropdown so the user can
+// re-open one. Capped at CLOSED_FOLIAS_MAX (MRU; dedup by URL).
+const CLOSED_FOLIAS_PATH = path.join(app.getPath('userData'), 'closed-folias.json');
+const CLOSED_FOLIAS_MAX = 20;
 // downloadPath null → use the platform downloads folder (resolved at use-time
 // because app.getPath('downloads') is only valid after `app` is constructed).
 const SETTINGS_DEFAULTS = {
@@ -506,6 +510,52 @@ function loadStickiesFromDisk() {
   } catch { return []; }
 }
 
+// ---- Previously-closed windows -----------------------------------------
+// Captured at win.on('closed') time from cached _lastUrl/_lastPageTitle (the
+// guest webContents is destroyed by then, so we can't read from it). Skipped
+// during app shutdown — those closes are the OS quitting the app, not the
+// user explicitly dismissing a window. Stickies that were saved to disk
+// will lazy-restore on next launch; replicating them into "previously
+// closed" would be misleading.
+
+let isQuitting = false;
+let closedFolias = [];
+try {
+  const data = JSON.parse(fs.readFileSync(CLOSED_FOLIAS_PATH, 'utf8'));
+  if (Array.isArray(data)) closedFolias = data.slice(0, CLOSED_FOLIAS_MAX);
+} catch {}
+
+let writeClosedFoliasTimer = null;
+function scheduleSaveClosedFolias() {
+  if (writeClosedFoliasTimer) return;
+  writeClosedFoliasTimer = setTimeout(() => {
+    writeClosedFoliasTimer = null;
+    saveClosedFoliasNow();
+  }, 200);
+}
+function flushSaveClosedFolias() {
+  if (writeClosedFoliasTimer) {
+    clearTimeout(writeClosedFoliasTimer);
+    writeClosedFoliasTimer = null;
+  }
+  saveClosedFoliasNow();
+}
+function saveClosedFoliasNow() {
+  try {
+    fs.mkdirSync(path.dirname(CLOSED_FOLIAS_PATH), { recursive: true });
+    fs.writeFileSync(CLOSED_FOLIAS_PATH, JSON.stringify(closedFolias, null, 2));
+  } catch {}
+}
+
+function pushClosedFolia(entry) {
+  // Dedup by URL: re-closing a page promotes it back to the top instead of
+  // filling the list with duplicates of the same site.
+  closedFolias = closedFolias.filter((e) => e.url !== entry.url);
+  closedFolias.unshift(entry);
+  if (closedFolias.length > CLOSED_FOLIAS_MAX) closedFolias.length = CLOSED_FOLIAS_MAX;
+  scheduleSaveClosedFolias();
+}
+
 // Saved bounds may be off-screen if the user disconnected a monitor between
 // quit and launch. Pull the rect into the nearest display's work area so the
 // restored sticky is always visible and clickable.
@@ -577,6 +627,11 @@ function createWindow(url, opener, options = {}) {
   // the renderer queries get-init-state, paints the overlay, and only loads
   // the deferred URL once the user maximises.
   const restore = options.restoreSticky;
+  // `restoreHistory`: {entries, activeIndex} from a "previously closed
+  // Folia". Replayed into the guest's webContents in did-attach-webview so
+  // the user can navigate back through everything they had open before
+  // closing the window.
+  const restoreHistory = options.restoreHistory;
   const initialBounds = restore
     ? clampBoundsToDisplay(restore.stickyBounds)
     : (cascadedBoundsFrom(opener || BrowserWindow.getFocusedWindow())
@@ -640,6 +695,27 @@ function createWindow(url, opener, options = {}) {
     // can act on it (Copy URL, Refresh, Print to PDF, zoom).
     win._guest = wvContents;
 
+    // Replay saved back-button history from a "previously closed Folia".
+    // navigationHistory.restore replaces the entire history list and
+    // navigates to the entry at `index`. We do it as early as possible
+    // (right at attach) so the in-flight initial nav to the same URL is
+    // pre-empted by the restore's navigation to the same URL — Chromium
+    // collapses them, no visible double-load. Guard against API absence
+    // so older Electron builds degrade to "opens URL fresh, no history".
+    if (restoreHistory?.entries?.length) {
+      try {
+        wvContents.navigationHistory.restore({
+          entries: restoreHistory.entries,
+          index:   Math.max(0, Math.min(
+            restoreHistory.activeIndex || 0,
+            restoreHistory.entries.length - 1
+          )),
+        });
+      } catch (err) {
+        console.error('[closed-folia] history restore failed:', err);
+      }
+    }
+
     // Apply the global zoom on every load. setZoomFactor can be reset on
     // cross-origin navigation, so re-applying on dom-ready keeps it stable.
     wvContents.on('dom-ready', () => {
@@ -653,6 +729,19 @@ function createWindow(url, opener, options = {}) {
     wvContents.on('audio-state-changed', (event) => {
       if (win.isDestroyed()) return;
       win.webContents.send('audio-state', !!event.audible);
+    });
+
+    // Cache the latest title + URL on the BrowserWindow itself so the
+    // win.on('closed') handler can record the page into "previously closed
+    // Folias" — by then wvContents is already destroyed and can't be read.
+    wvContents.on('page-title-updated', (e) => {
+      win._lastPageTitle = (e.title || '').trim() || null;
+    });
+    wvContents.on('did-navigate', (e) => {
+      win._lastUrl = e.url || null;
+    });
+    wvContents.on('did-navigate-in-page', (e) => {
+      if (e.isMainFrame && e.url) win._lastUrl = e.url;
     });
 
     // getDisplayMedia (screen sharing). Chromium rejects this by default in
@@ -889,6 +978,26 @@ function createWindow(url, opener, options = {}) {
   win.on('move', trackMove);
   win.on('moved', trackMove);
 
+  // `close` fires while the window is still tearing down — the guest
+  // webContents is alive here, but already destroyed by the time `closed`
+  // fires. Capture the full back-button history now so the "previously
+  // closed Folias" entry can replay it on re-open. pageState (form fields,
+  // scroll position) is stripped: it's opaque, can be tens of KB per
+  // entry, and would balloon closed-folias.json — url + title is enough
+  // for back-traversal to refetch each page.
+  win.on('close', () => {
+    if (!win._guest || win._guest.isDestroyed()) return;
+    try {
+      const entries = win._guest.navigationHistory.getAllEntries();
+      if (entries.length > 1) {
+        win._lastHistory = {
+          entries: entries.map((e) => ({ url: e.url, title: e.title })),
+          activeIndex: win._guest.navigationHistory.getActiveIndex(),
+        };
+      }
+    } catch {}
+  });
+
   win.on('closed', () => {
     unregisterWindow(win.id);
     // Resolve any in-flight permission prompts for this window as denials —
@@ -903,6 +1012,33 @@ function createWindow(url, opener, options = {}) {
     // wasn't a sticky; if it was, the snapshot now excludes it because
     // saveStickiesNow iterates the live BrowserWindow list.
     scheduleSaveStickies();
+
+    // Record into "previously closed Folias" so the toolbar dropdown can
+    // surface it as a re-open shortcut. Skipped while quitting (those
+    // closes are the OS tearing down the app, not user dismissals — and
+    // stickies will lazy-restore on next launch via stickies.json anyway).
+    // Prefer the sticky's persisted url/title (works for lazy stickies
+    // that were never expanded); fall back to the cached values from the
+    // last navigation.
+    if (!isQuitting) {
+      const url = win._sticky?.url || win._lastUrl || null;
+      const title =
+        win._lastPageTitle ||
+        (win._sticky?.verb && win._sticky?.label
+          ? `${win._sticky.verb} ${win._sticky.label}`
+          : null);
+      if (url && url !== 'about:blank') {
+        pushClosedFolia({
+          url,
+          title: title || url,
+          closedAt: Date.now(),
+          // win._lastHistory is captured in win.on('close') above when the
+          // guest had more than one entry; for single-page sessions it's
+          // null and the re-open path just loads the URL fresh.
+          history: win._lastHistory || null,
+        });
+      }
+    }
   });
 }
 
@@ -1440,6 +1576,19 @@ ipcMain.on('app-menu-action', (e, action) => {
   }
 });
 
+// Previously-closed Folias — list for the dropdown submenu, plus an
+// open-by-url action that routes through createWindow so the cascaded
+// placement / shared partition behave like any other re-open.
+ipcMain.handle('get-closed-folias', () => closedFolias);
+ipcMain.on('open-closed-folia', (e, openedUrl) => {
+  if (!openedUrl) return;
+  const opener = BrowserWindow.fromWebContents(e.sender);
+  // Pull the captured history back out by URL so the new window restores
+  // the full back-button trail, not just the active page.
+  const entry = closedFolias.find((c) => c.url === openedUrl);
+  createWindow(openedUrl, opener, { restoreHistory: entry?.history || null });
+});
+
 // IPC: bulk privacy actions (every persisted partition + default session)
 ipcMain.handle('delete-cookies', async () => {
   for (const s of await eachSession()) {
@@ -1567,8 +1716,13 @@ if (!gotLock) {
 
   // Flush any pending stickies write before exit — the debounce timer would
   // otherwise be cancelled on process shutdown and the last few seconds of
-  // sticky drags / comment edits would be lost.
+  // sticky drags / comment edits would be lost. Also flag isQuitting so the
+  // upcoming wave of window-close events doesn't register every open window
+  // as a "previously closed Folia" (those closes are app teardown, not the
+  // user explicitly dismissing each window).
   app.on('before-quit', () => {
+    isQuitting = true;
     flushSaveStickies();
+    flushSaveClosedFolias();
   });
 }

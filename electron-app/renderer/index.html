@@ -52,6 +52,10 @@
       <div id="app-menu-backdrop" hidden></div>
       <div id="app-menu" hidden>
         <button class="item" data-action="new-window">New window</button>
+        <button class="item has-submenu" data-action="closed-folias">
+          Previously closed Folias
+          <span class="submenu-chevron" aria-hidden="true">›</span>
+        </button>
         <div class="separator"></div>
         <button class="item" data-action="refresh" data-needs-page>Refresh<span class="accel" data-key="R"></span></button>
         <button class="item" data-action="copy-url" data-needs-page>Copy URL</button>
@@ -59,6 +63,10 @@
         <div class="separator"></div>
         <button class="item" data-action="settings">Settings</button>
       </div>
+      <!-- Fly-out submenu for "Previously closed Folias". Anchored to the
+           right of the parent item by toolbar.js; populated on every open
+           so the list stays current within a session. -->
+      <div id="closed-folias-submenu" hidden></div>
 
       <div id="drag-space">
         <input id="url-bar" type="text" autocomplete="off" spellcheck="false"

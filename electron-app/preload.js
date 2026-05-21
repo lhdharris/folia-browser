@@ -49,6 +49,12 @@ contextBridge.exposeInMainWorld('wm', {
   // dispatches the chosen action by name.
   getAppMenuState: () => ipcRenderer.invoke('get-app-menu-state'),
   appMenuAction:   (action) => ipcRenderer.send('app-menu-action', action),
+  // "Previously closed Folias" submenu data + activation. Closed entries
+  // are tracked in main from win.on('closed'); selecting one opens it
+  // through the normal createWindow path (cascaded placement, shared
+  // partition).
+  getClosedFolias: () => ipcRenderer.invoke('get-closed-folias'),
+  openClosedFolia: (openedUrl) => ipcRenderer.send('open-closed-folia', openedUrl),
   // Downloads
   getDefaultDownloadPath: () => ipcRenderer.invoke('default-download-path'),
   pickDownloadFolder:     () => ipcRenderer.invoke('pick-download-folder'),
