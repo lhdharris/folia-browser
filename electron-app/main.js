@@ -29,6 +29,10 @@ const SETTINGS_PATH = path.join(app.getPath('userData'), 'settings.json');
 // re-create a lazy sticky on next launch (URL deferred until restore — see
 // the "Sticky-window persistence" section below).
 const STICKIES_PATH = path.join(app.getPath('userData'), 'stickies.json');
+// Recently-closed windows, listed in the toolbar dropdown so the user can
+// re-open one. Capped at CLOSED_FOLIAS_MAX (MRU; dedup by URL).
+const CLOSED_FOLIAS_PATH = path.join(app.getPath('userData'), 'closed-folias.json');
+const CLOSED_FOLIAS_MAX = 20;
 // downloadPath null → use the platform downloads folder (resolved at use-time
 // because app.getPath('downloads') is only valid after `app` is constructed).
 const SETTINGS_DEFAULTS = {
@@ -158,16 +162,17 @@ function stickyBoundsFor(cur) {
 // was created on, and switching workspaces leaves it behind. This matches
 // the physical "post-it on the wall" mental model.
 //
-// alwaysOnTop is the floating-above-other-windows hint. 'screen-saver' is
-// the highest level Electron exposes and is the only one Mutter / KWin
-// reliably honour on Wayland. The double-apply (callsite calls
-// pinStickyOnTop both before and after animateBounds) is for Wayland too:
-// some compositors drop the level on configure events, so re-asserting
-// after the resize settles is belt-and-braces. macOS / Windows honour the
-// first call and the second one is a harmless no-op.
+// alwaysOnTop is the floating-above-other-windows hint. 'floating' sits
+// above normal windows but BELOW the OS menu bar / taskbar / notification
+// area on macOS and Windows — the user wants stickies to live as desktop
+// post-its, not chrome that obscures the system tray. The double-apply
+// (callsite calls pinStickyOnTop both before and after animateBounds) is
+// for Wayland: some compositors drop the level on configure events, so
+// re-asserting after the resize settles is belt-and-braces. macOS /
+// Windows honour the first call and the second one is a harmless no-op.
 function pinStickyOnTop(win) {
   if (win.isDestroyed()) return;
-  win.setAlwaysOnTop(true, 'screen-saver');
+  win.setAlwaysOnTop(true, 'floating');
   try {
     win.setVisibleOnAllWorkspaces(false, { visibleOnFullScreen: true });
   } catch {}
@@ -405,18 +410,33 @@ const ANIM_TICK_MS = 30;
 function animateBounds(win, target, ms) {
   return new Promise((resolve) => {
     if (win.isDestroyed()) return resolve();
+    // Flag so move-event listeners can distinguish "programmatic animation
+    // tick" from "user dragged the window". Without this, the restore
+    // animation's setBounds ticks would fire move events that look exactly
+    // like a user drag, and the sticky-position memory below would get
+    // wiped mid-animation. The flag stays true for an extra 250ms after
+    // the animation logically ends — Wayland compositors sometimes fire
+    // a few additional `move` events as the window settles, which would
+    // otherwise look like a user drag the moment the animation completes.
+    win._animating = true;
+    const done = () => {
+      resolve();
+      setTimeout(() => {
+        if (!win.isDestroyed()) win._animating = false;
+      }, 250);
+    };
     if (process.platform === 'darwin') {
       // Native macOS animation. No completion callback exposed by Electron,
       // so resolve after the requested duration — close enough for the
       // renderer's "focus comment after shrink" sequencing.
       win.setBounds(target, true);
-      setTimeout(resolve, ms);
+      setTimeout(done, ms);
       return;
     }
     const start = win.getBounds();
     const t0 = Date.now();
     const tick = () => {
-      if (win.isDestroyed()) return resolve();
+      if (win.isDestroyed()) return done();
       const elapsed = Date.now() - t0;
       const t = Math.min(1, elapsed / ms);
       const eased = 1 - Math.pow(1 - t, 3);
@@ -427,7 +447,7 @@ function animateBounds(win, target, ms) {
         height: Math.round(start.height + (target.height - start.height) * eased),
       });
       if (t < 1) setTimeout(tick, ANIM_TICK_MS);
-      else resolve();
+      else done();
     };
     tick();
   });
@@ -466,15 +486,16 @@ function saveStickiesNow() {
     if (w.isDestroyed() || !w._sticky) continue;
     const info = windowHues.get(w.id);
     entries.push({
-      url:            w._sticky.url     || null,
-      verb:           w._sticky.verb    || null,
-      label:          w._sticky.label   || null,
-      comment:        w._sticky.comment || '',
+      url:            w._sticky.url       || null,
+      verb:           w._sticky.verb      || null,
+      label:          w._sticky.label     || null,
+      pageTitle:      w._sticky.pageTitle || null,
+      comment:        w._sticky.comment   || '',
       originalBounds: w._sticky.originalBounds,
       stickyBounds:   w._sticky.stickyBounds,
       wasMaximized:   !!w._sticky.wasMaximized,
-      lockedColor:    info?.lockedColor || null,
-      hostname:       info?.hostname    || null,
+      lockedColor:    info?.lockedColor   || null,
+      hostname:       info?.hostname      || null,
     });
   }
   try {
@@ -488,6 +509,52 @@ function loadStickiesFromDisk() {
     const data = JSON.parse(fs.readFileSync(STICKIES_PATH, 'utf8'));
     return Array.isArray(data) ? data : [];
   } catch { return []; }
+}
+
+// ---- Previously-closed windows -----------------------------------------
+// Captured at win.on('closed') time from cached _lastUrl/_lastPageTitle (the
+// guest webContents is destroyed by then, so we can't read from it). Skipped
+// during app shutdown — those closes are the OS quitting the app, not the
+// user explicitly dismissing a window. Stickies that were saved to disk
+// will lazy-restore on next launch; replicating them into "previously
+// closed" would be misleading.
+
+let isQuitting = false;
+let closedFolias = [];
+try {
+  const data = JSON.parse(fs.readFileSync(CLOSED_FOLIAS_PATH, 'utf8'));
+  if (Array.isArray(data)) closedFolias = data.slice(0, CLOSED_FOLIAS_MAX);
+} catch {}
+
+let writeClosedFoliasTimer = null;
+function scheduleSaveClosedFolias() {
+  if (writeClosedFoliasTimer) return;
+  writeClosedFoliasTimer = setTimeout(() => {
+    writeClosedFoliasTimer = null;
+    saveClosedFoliasNow();
+  }, 200);
+}
+function flushSaveClosedFolias() {
+  if (writeClosedFoliasTimer) {
+    clearTimeout(writeClosedFoliasTimer);
+    writeClosedFoliasTimer = null;
+  }
+  saveClosedFoliasNow();
+}
+function saveClosedFoliasNow() {
+  try {
+    fs.mkdirSync(path.dirname(CLOSED_FOLIAS_PATH), { recursive: true });
+    fs.writeFileSync(CLOSED_FOLIAS_PATH, JSON.stringify(closedFolias, null, 2));
+  } catch {}
+}
+
+function pushClosedFolia(entry) {
+  // Dedup by URL: re-closing a page promotes it back to the top instead of
+  // filling the list with duplicates of the same site.
+  closedFolias = closedFolias.filter((e) => e.url !== entry.url);
+  closedFolias.unshift(entry);
+  if (closedFolias.length > CLOSED_FOLIAS_MAX) closedFolias.length = CLOSED_FOLIAS_MAX;
+  scheduleSaveClosedFolias();
 }
 
 // Saved bounds may be off-screen if the user disconnected a monitor between
@@ -561,6 +628,11 @@ function createWindow(url, opener, options = {}) {
   // the renderer queries get-init-state, paints the overlay, and only loads
   // the deferred URL once the user maximises.
   const restore = options.restoreSticky;
+  // `restoreHistory`: {entries, activeIndex} from a "previously closed
+  // Folia". Replayed into the guest's webContents in did-attach-webview so
+  // the user can navigate back through everything they had open before
+  // closing the window.
+  const restoreHistory = options.restoreHistory;
   const initialBounds = restore
     ? clampBoundsToDisplay(restore.stickyBounds)
     : (cascadedBoundsFrom(opener || BrowserWindow.getFocusedWindow())
@@ -597,6 +669,7 @@ function createWindow(url, opener, options = {}) {
       url:            restore.url,
       verb:           restore.verb,
       label:          restore.label,
+      pageTitle:      restore.pageTitle || null,
       comment:        restore.comment || '',
       deferredUrl:    restore.url,
       lazy:           true,
@@ -624,6 +697,27 @@ function createWindow(url, opener, options = {}) {
     // can act on it (Copy URL, Refresh, Print to PDF, zoom).
     win._guest = wvContents;
 
+    // Replay saved back-button history from a "previously closed Folia".
+    // navigationHistory.restore replaces the entire history list and
+    // navigates to the entry at `index`. We do it as early as possible
+    // (right at attach) so the in-flight initial nav to the same URL is
+    // pre-empted by the restore's navigation to the same URL — Chromium
+    // collapses them, no visible double-load. Guard against API absence
+    // so older Electron builds degrade to "opens URL fresh, no history".
+    if (restoreHistory?.entries?.length) {
+      try {
+        wvContents.navigationHistory.restore({
+          entries: restoreHistory.entries,
+          index:   Math.max(0, Math.min(
+            restoreHistory.activeIndex || 0,
+            restoreHistory.entries.length - 1
+          )),
+        });
+      } catch (err) {
+        console.error('[closed-folia] history restore failed:', err);
+      }
+    }
+
     // Apply the global zoom on every load. setZoomFactor can be reset on
     // cross-origin navigation, so re-applying on dom-ready keeps it stable.
     wvContents.on('dom-ready', () => {
@@ -637,6 +731,19 @@ function createWindow(url, opener, options = {}) {
     wvContents.on('audio-state-changed', (event) => {
       if (win.isDestroyed()) return;
       win.webContents.send('audio-state', !!event.audible);
+    });
+
+    // Cache the latest title + URL on the BrowserWindow itself so the
+    // win.on('closed') handler can record the page into "previously closed
+    // Folias" — by then wvContents is already destroyed and can't be read.
+    wvContents.on('page-title-updated', (e) => {
+      win._lastPageTitle = (e.title || '').trim() || null;
+    });
+    wvContents.on('did-navigate', (e) => {
+      win._lastUrl = e.url || null;
+    });
+    wvContents.on('did-navigate-in-page', (e) => {
+      if (e.isMainFrame && e.url) win._lastUrl = e.url;
     });
 
     // getDisplayMedia (screen sharing). Chromium rejects this by default in
@@ -829,31 +936,69 @@ function createWindow(url, opener, options = {}) {
     win.webContents.send('sticky-restore-requested');
   });
 
-  // Stickies persistence: every drag of a parked sticky updates its saved
-  // position so the next launch puts it back exactly where the user left it.
-  // `move` fires throughout the drag on Linux/Windows; `moved` fires once at
-  // the end on macOS — debounce dedupes both. Guard on _sticky so non-sticky
-  // window moves don't hammer the disk.
+  // Move tracking serves two related jobs:
   //
-  // `trackMoves` is gated on `show` + 250ms settle: on Wayland the
-  // compositor ignores our initial x/y hints and places the window where
-  // it wants, firing `move` events as it does so. Without this gate, the
-  // WM-placed position would immediately overwrite the saved bounds for
-  // every lazy-restored sticky. After the window settles, only real user
-  // drags fire the listener.
+  //  1. Sticky drag → persist new position so next launch puts the sticky
+  //     back exactly where the user left it. Also mirrored into
+  //     win._lastStickyBounds so a subsequent restore-then-reshrink cycle
+  //     re-uses the same on-screen spot (the user said "the sticky lives
+  //     over here, not wherever the toolbar's top-left happens to be").
+  //
+  //  2. Full-size drag (window is NOT sticky) → clear _lastStickyBounds.
+  //     The user moved the window as a whole, so the previous sticky
+  //     position is no longer where they expect the sticky to reappear;
+  //     fall back to "shrink in place at the new top-left" next shrink.
+  //
+  // Gates:
+  //   - `trackMoves` is false until show + 250ms. On Wayland the
+  //     compositor ignores our initial x/y hint and fires move events as
+  //     it places the window; without the gate, that WM placement would
+  //     immediately overwrite saved bounds for every lazy-restored sticky.
+  //   - `win._animating` (set by animateBounds) suppresses the listener
+  //     during shrink/restore animations — the setBounds ticks fire move
+  //     events that would otherwise look like a user drag and clobber
+  //     either persistence target.
+  //
+  // `move` fires throughout the drag on Linux/Windows; `moved` fires once
+  // at the end on macOS — both bind so platforms see at least one event.
   let trackMoves = false;
   win.once('show', () => {
     setTimeout(() => { trackMoves = true; }, 250);
   });
-  const trackStickyMove = () => {
+  const trackMove = () => {
     if (!trackMoves) return;
-    if (win.isDestroyed() || !win._sticky) return;
-    const b = win.getBounds();
-    win._sticky.stickyBounds = { x: b.x, y: b.y, width: b.width, height: b.height };
-    scheduleSaveStickies();
+    if (win.isDestroyed() || win._animating) return;
+    if (win._sticky) {
+      const b = win.getBounds();
+      win._sticky.stickyBounds = { x: b.x, y: b.y, width: b.width, height: b.height };
+      win._lastStickyBounds = { x: b.x, y: b.y };
+      scheduleSaveStickies();
+    } else {
+      win._lastStickyBounds = null;
+    }
   };
-  win.on('move', trackStickyMove);
-  win.on('moved', trackStickyMove);
+  win.on('move', trackMove);
+  win.on('moved', trackMove);
+
+  // `close` fires while the window is still tearing down — the guest
+  // webContents is alive here, but already destroyed by the time `closed`
+  // fires. Capture the full back-button history now so the "previously
+  // closed Folias" entry can replay it on re-open. pageState (form fields,
+  // scroll position) is stripped: it's opaque, can be tens of KB per
+  // entry, and would balloon closed-folias.json — url + title is enough
+  // for back-traversal to refetch each page.
+  win.on('close', () => {
+    if (!win._guest || win._guest.isDestroyed()) return;
+    try {
+      const entries = win._guest.navigationHistory.getAllEntries();
+      if (entries.length > 1) {
+        win._lastHistory = {
+          entries: entries.map((e) => ({ url: e.url, title: e.title })),
+          activeIndex: win._guest.navigationHistory.getActiveIndex(),
+        };
+      }
+    } catch {}
+  });
 
   win.on('closed', () => {
     unregisterWindow(win.id);
@@ -869,6 +1014,34 @@ function createWindow(url, opener, options = {}) {
     // wasn't a sticky; if it was, the snapshot now excludes it because
     // saveStickiesNow iterates the live BrowserWindow list.
     scheduleSaveStickies();
+
+    // Record into "previously closed Folias" so the toolbar dropdown can
+    // surface it as a re-open shortcut. Skipped while quitting (those
+    // closes are the OS tearing down the app, not user dismissals — and
+    // stickies will lazy-restore on next launch via stickies.json anyway).
+    // Prefer the sticky's persisted url/title (works for lazy stickies
+    // that were never expanded); fall back to the cached values from the
+    // last navigation.
+    if (!isQuitting) {
+      const url = win._sticky?.url || win._lastUrl || null;
+      const title =
+        win._sticky?.pageTitle ||
+        win._lastPageTitle ||
+        (win._sticky?.verb && win._sticky?.label
+          ? `${win._sticky.verb} ${win._sticky.label}`
+          : null);
+      if (url && url !== 'about:blank') {
+        pushClosedFolia({
+          url,
+          title: title || url,
+          closedAt: Date.now(),
+          // win._lastHistory is captured in win.on('close') above when the
+          // guest had more than one entry; for single-page sessions it's
+          // null and the re-open path just loads the URL fresh.
+          history: win._lastHistory || null,
+        });
+      }
+    }
   });
 }
 
@@ -1114,7 +1287,21 @@ ipcMain.handle('wm-sticky-shrink', async (e, payload = {}) => {
   const wasMaximized = win.isMaximized();
   if (wasMaximized) win.unmaximize();
   const originalBounds = win.getBounds();
-  const stickyBounds = stickyBoundsFor(originalBounds);
+  // Prefer the position the sticky was at last cycle (captured on restore /
+  // updated during sticky drags). If the user has since moved the full-size
+  // window, win._lastStickyBounds was cleared by the move tracker — we fall
+  // through to the default "shrink in place at the current top-left" path.
+  // Clamp to the current display's work area so a remembered position from
+  // a now-disconnected monitor doesn't strand the sticky off-screen.
+  const sized = stickyBoundsFor(originalBounds);
+  const stickyBounds = win._lastStickyBounds
+    ? clampBoundsToDisplay({
+        x: win._lastStickyBounds.x,
+        y: win._lastStickyBounds.y,
+        width:  sized.width,
+        height: sized.height,
+      })
+    : sized;
   // stickyBounds is stored so the maximize-intercept handler can reset to
   // the exact target size. On Wayland, repeated unmaximize() calls drift
   // by a few pixels each cycle (compositor frame inset accounting), which
@@ -1125,10 +1312,11 @@ ipcMain.handle('wm-sticky-shrink', async (e, payload = {}) => {
     originalBounds,
     stickyBounds,
     wasMaximized,
-    url:     payload.url     || null,
-    verb:    payload.verb    || null,
-    label:   payload.label   || null,
-    comment: payload.comment || '',
+    url:       payload.url       || null,
+    verb:      payload.verb      || null,
+    label:     payload.label     || null,
+    pageTitle: payload.pageTitle || null,
+    comment:   payload.comment   || '',
   };
 
   // Lone window with no hue → freeze its colour to the sticky-yellow so it
@@ -1171,6 +1359,11 @@ ipcMain.handle('wm-sticky-restore', async (e) => {
   // bug guarded by the comment in renderer/toolbar.js).
   const deferredUrl = win._sticky.deferredUrl || null;
   const wasMaximized = win._sticky.wasMaximized;
+  // Remember where the sticky was sitting (post-user-drags) so the next
+  // shrink cycle reuses that spot. The move tracker clears this if the
+  // user drags the restored full-size window before re-shrinking.
+  const sb = win._sticky.stickyBounds;
+  win._lastStickyBounds = sb ? { x: sb.x, y: sb.y } : null;
   win._sticky = null;
   unpinStickyOnTop(win);
 
@@ -1220,6 +1413,16 @@ ipcMain.on('wm-sticky-update-comment', (e, comment) => {
   scheduleSaveStickies();
 });
 
+// Page title arriving (or changing) while the window is stickied — keep the
+// persisted snapshot fresh so the next launch's lazy-restore shows the
+// latest page title without having to load the URL.
+ipcMain.on('wm-sticky-update-title', (e, pageTitle) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  if (!win || !win._sticky) return;
+  win._sticky.pageTitle = typeof pageTitle === 'string' ? pageTitle : null;
+  scheduleSaveStickies();
+});
+
 // First-render bootstrap: the renderer queries this on init to decide
 // whether it's a fresh window (URL hash or blank) or a lazy-restored sticky
 // that needs its overlay painted from saved state. Reads _sticky directly so
@@ -1228,11 +1431,12 @@ ipcMain.handle('get-init-state', (e) => {
   const win = BrowserWindow.fromWebContents(e.sender);
   if (!win?._sticky?.lazy) return { lazy: false };
   return {
-    lazy:    true,
-    url:     win._sticky.url,
-    verb:    win._sticky.verb,
-    label:   win._sticky.label,
-    comment: win._sticky.comment || '',
+    lazy:      true,
+    url:       win._sticky.url,
+    verb:      win._sticky.verb,
+    label:     win._sticky.label,
+    pageTitle: win._sticky.pageTitle || null,
+    comment:   win._sticky.comment || '',
   };
 });
 
@@ -1387,6 +1591,19 @@ ipcMain.on('app-menu-action', (e, action) => {
   }
 });
 
+// Previously-closed Folias — list for the dropdown submenu, plus an
+// open-by-url action that routes through createWindow so the cascaded
+// placement / shared partition behave like any other re-open.
+ipcMain.handle('get-closed-folias', () => closedFolias);
+ipcMain.on('open-closed-folia', (e, openedUrl) => {
+  if (!openedUrl) return;
+  const opener = BrowserWindow.fromWebContents(e.sender);
+  // Pull the captured history back out by URL so the new window restores
+  // the full back-button trail, not just the active page.
+  const entry = closedFolias.find((c) => c.url === openedUrl);
+  createWindow(openedUrl, opener, { restoreHistory: entry?.history || null });
+});
+
 // IPC: bulk privacy actions (every persisted partition + default session)
 ipcMain.handle('delete-cookies', async () => {
   for (const s of await eachSession()) {
@@ -1514,8 +1731,13 @@ if (!gotLock) {
 
   // Flush any pending stickies write before exit — the debounce timer would
   // otherwise be cancelled on process shutdown and the last few seconds of
-  // sticky drags / comment edits would be lost.
+  // sticky drags / comment edits would be lost. Also flag isQuitting so the
+  // upcoming wave of window-close events doesn't register every open window
+  // as a "previously closed Folia" (those closes are app teardown, not the
+  // user explicitly dismissing each window).
   app.on('before-quit', () => {
+    isQuitting = true;
     flushSaveStickies();
+    flushSaveClosedFolias();
   });
 }

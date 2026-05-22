@@ -515,10 +515,72 @@ body:not(.no-hover) #app-menu .item:hover:not(:disabled) { background: #d8d8d8; 
   margin-left: 24px;
 }
 
+#app-menu .item .submenu-chevron {
+  color: #888;
+  font-size: 16px;
+  margin-left: 24px;
+  line-height: 1;
+}
+
+#app-menu .item.open .submenu-chevron { color: #222; }
+
 #app-menu .separator {
   height: 1px;
   background: #e6e6e6;
   margin: 4px 0;
+}
+
+/* Fly-out submenu for "Previously closed Folias". Same chrome as the
+   parent menu; positioned by toolbar.js so its top edge aligns with the
+   parent item's row and its left edge sits flush against the parent
+   menu's right edge. Same z-index — the backdrop is the dismissal
+   surface for both. */
+#closed-folias-submenu {
+  position: fixed;
+  top: 0;
+  left: 0;
+  background: #ffffff;
+  border: 1px solid #b8b8b8;
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+  padding: 4px 0;
+  min-width: 240px;
+  max-width: 360px;
+  max-height: 360px;
+  overflow-y: auto;
+  z-index: 101;
+  -webkit-app-region: no-drag;
+  user-select: none;
+  display: flex;
+  flex-direction: column;
+}
+
+#closed-folias-submenu[hidden] { display: none; }
+
+#closed-folias-submenu .item {
+  display: block;
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 14px;
+  background: transparent;
+  color: #222;
+  border: none;
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+body:not(.no-hover) #closed-folias-submenu .item:hover { background: #d8d8d8; }
+
+#closed-folias-submenu .empty {
+  padding: 8px 14px;
+  font-size: 14px;
+  color: #999;
+  font-style: italic;
 }
 
 /* HTML5 fullscreen (YouTube, etc.) — main has put the host BrowserWindow

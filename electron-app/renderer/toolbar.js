@@ -59,6 +59,11 @@ let actionLabel = null;  // hostname / "'query'" — same string used by #action
 // updated on did-navigate(-in-page); read at sticky-shrink time so main can
 // persist what URL to reload on lazy-restore.
 let currentLoadedUrl = null;
+// Latest <title> from the guest page. Stickies show this as their title
+// (the page itself) rather than the hostname/query the URL bar shows. Set
+// by the page-title-updated listener and reset on did-navigate (new page,
+// old title is stale until the new page sends one).
+let pageTitle = null;
 
 async function init() {
   // Sticky-note persistence: if main reports this is a lazy-restored
@@ -70,6 +75,7 @@ async function init() {
     actionVerb  = initState.verb || null;
     actionLabel = initState.label || null;
     currentLoadedUrl = initState.url || null;
+    pageTitle = initState.pageTitle || null;
     if (actionLabel) placeStaticLabel(actionLabel);
     enableStickyButton();
     stickyTitle.textContent = composeStickyTitle();
@@ -539,9 +545,27 @@ webview.addEventListener('dom-ready', () => {
 // instead of every Folia window saying "Folia Browser". Electron's BrowserWindow
 // auto-syncs from document.title via its own page-title-updated event. Skip
 // empties — keep the static "Folia Browser" fallback from index.html.
+//
+// Also stash the raw title for the sticky overlay (the URL bar still shows
+// origin/query; a sticky shows the page itself). If the user has already
+// shrunken the window, refresh the visible sticky title — the title can
+// arrive after shrink if the user parks a still-loading page.
 webview.addEventListener('page-title-updated', (e) => {
   const t = (e.title || '').trim();
-  if (t) document.title = `${t} — Folia Browser`;
+  if (t) {
+    document.title = `${t} — Folia Browser`;
+    pageTitle = t;
+    if (document.body.classList.contains('sticky-mode')) {
+      stickyTitle.textContent = composeStickyTitle();
+      window.wm.updateStickyTitle(t);
+    }
+  }
+});
+
+// New top-level navigation invalidates the previous page's title. Clear so
+// the sticky doesn't show stale text until the new page sends a title.
+webview.addEventListener('did-navigate', () => {
+  pageTitle = null;
 });
 
 // Navigation. Back keeps going through webview history; once the stack
@@ -683,6 +707,8 @@ document.getElementById('maximize').addEventListener('click', () => window.wm.to
 const menuBtn = document.getElementById('menu');
 const appMenu = document.getElementById('app-menu');
 const appMenuBackdrop = document.getElementById('app-menu-backdrop');
+const closedFoliasItem = appMenu.querySelector('.item[data-action="closed-folias"]');
+const closedSubmenu = document.getElementById('closed-folias-submenu');
 
 // Render keyboard-accelerator hints based on platform (⌘R on macOS, Ctrl+R
 // elsewhere). The keys themselves still come from Chromium's defaults; the
@@ -703,6 +729,7 @@ function positionAppMenu() {
 function closeAppMenu() {
   appMenu.hidden = true;
   appMenuBackdrop.hidden = true;
+  hideClosedSubmenu();
 }
 
 async function openAppMenu() {
@@ -720,6 +747,61 @@ async function openAppMenu() {
   if (urlBarShakeCount >= 3) flashNewWindowItemGreen();
 }
 
+// Fly-out submenu for "Previously closed Folias". Click the parent item
+// to toggle; clicking another item in the parent menu (via the hover-close
+// below) or clicking the backdrop dismisses both. Submenu z-index sits
+// above the parent so its items receive clicks without bleeding through.
+function positionClosedSubmenu() {
+  const itemRect = closedFoliasItem.getBoundingClientRect();
+  const menuRect = appMenu.getBoundingClientRect();
+  closedSubmenu.style.left = Math.round(menuRect.right + 4) + 'px';
+  closedSubmenu.style.top  = Math.round(itemRect.top) + 'px';
+}
+
+function hideClosedSubmenu() {
+  closedSubmenu.hidden = true;
+  closedSubmenu.replaceChildren();
+  closedFoliasItem.classList.remove('open');
+}
+
+async function showClosedSubmenu() {
+  const entries = await window.wm.getClosedFolias();
+  closedSubmenu.replaceChildren();
+  if (!entries || entries.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'empty';
+    empty.textContent = 'No recently closed Folias';
+    closedSubmenu.appendChild(empty);
+  } else {
+    for (const entry of entries) {
+      const btn = document.createElement('button');
+      btn.className = 'item';
+      btn.textContent = entry.title && entry.title.trim() ? entry.title : entry.url;
+      btn.title = entry.url;
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        closeAppMenu();
+        window.wm.openClosedFolia(entry.url);
+      });
+      closedSubmenu.appendChild(btn);
+    }
+  }
+  closedSubmenu.hidden = false;
+  closedFoliasItem.classList.add('open');
+  positionClosedSubmenu();
+}
+
+// Hovering a sibling menu item while the submenu is open closes the
+// submenu, mirroring native menu behaviour ("highlight moved on").
+// Excludes the parent item itself so hovering over it doesn't slam the
+// submenu shut.
+appMenu.addEventListener('mouseover', (e) => {
+  if (closedSubmenu.hidden) return;
+  const item = e.target.closest('.item');
+  if (!item || item === closedFoliasItem) return;
+  hideClosedSubmenu();
+});
+
 // Backdrop click closes the menu. Clicks inside the webview otherwise never
 // bubble out to the toolbar's document; the backdrop catches them first.
 appMenuBackdrop.addEventListener('mousedown', closeAppMenu);
@@ -733,6 +815,14 @@ menuBtn.addEventListener('click', (e) => {
 appMenu.addEventListener('click', (e) => {
   const item = e.target.closest('.item');
   if (!item || item.disabled) return;
+  // "Previously closed Folias" toggles a nested submenu rather than
+  // dispatching to main — the action is local UI state, the activation
+  // happens when the user clicks an entry inside the submenu.
+  if (item.dataset.action === 'closed-folias') {
+    if (closedSubmenu.hidden) showClosedSubmenu();
+    else hideClosedSubmenu();
+    return;
+  }
   closeAppMenu();
   window.wm.appMenuAction(item.dataset.action);
   // Following the green-breadcrumb resets the URL-bar-click hint on
@@ -743,13 +833,18 @@ appMenu.addEventListener('click', (e) => {
 document.addEventListener('mousedown', (e) => {
   if (appMenu.hidden) return;
   if (appMenu.contains(e.target) || menuBtn.contains(e.target)) return;
+  if (closedSubmenu.contains(e.target)) return;
   closeAppMenu();
 });
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !appMenu.hidden) closeAppMenu();
 });
 webview.addEventListener('focus', () => { if (!appMenu.hidden) closeAppMenu(); });
-window.addEventListener('resize', () => { if (!appMenu.hidden) positionAppMenu(); });
+window.addEventListener('resize', () => {
+  if (appMenu.hidden) return;
+  positionAppMenu();
+  if (!closedSubmenu.hidden) positionClosedSubmenu();
+});
 
 // Download ring: shows progress for the most recently started download.
 // Click while in-progress → shake-red feedback ("wait"). Click after
@@ -1111,8 +1206,9 @@ function enableStickyButton() {
 }
 
 function composeStickyTitle() {
-  if (!actionVerb || !actionLabel) return 'Untitled window';
-  return `${actionVerb} ${actionLabel}`;
+  if (pageTitle) return pageTitle;
+  if (actionVerb && actionLabel) return `${actionVerb} ${actionLabel}`;
+  return 'Untitled window';
 }
 
 function placeCursorAtEnd(el) {
@@ -1126,6 +1222,21 @@ function placeCursorAtEnd(el) {
 
 stickyBtn.addEventListener('click', async () => {
   if (stickyBtn.disabled) return;
+
+  // If the user has text selected on the page when they click sticky,
+  // seed the comment with the selection — a frictionless "quote the
+  // thing I wanted to remember" gesture. Only prefill when the comment
+  // is empty: don't clobber a comment that's already been typed across
+  // previous shrink cycles (the overlay stays in the DOM, so its text
+  // persists across sticky/restore round-trips within a window's life).
+  if (!(stickyComment.textContent || '').trim()) {
+    try {
+      const selection = await webview.executeJavaScript('window.getSelection().toString()');
+      const trimmed = (selection || '').trim();
+      if (trimmed) stickyComment.textContent = trimmed;
+    } catch {}
+  }
+
   stickyTitle.textContent = composeStickyTitle();
   stickyOverlay.hidden = false;
   document.body.classList.add('sticky-mode');
@@ -1134,10 +1245,11 @@ stickyBtn.addEventListener('click', async () => {
   // *after* the visual settles. Payload is what main persists for next-
   // launch lazy-restore (URL to defer-load, title parts, comment text).
   await window.wm.shrinkToSticky({
-    url:     currentLoadedUrl,
-    verb:    actionVerb,
-    label:   actionLabel,
-    comment: stickyComment.textContent || '',
+    url:       currentLoadedUrl,
+    verb:      actionVerb,
+    label:     actionLabel,
+    pageTitle,
+    comment:   stickyComment.textContent || '',
   });
   stickyComment.focus();
   placeCursorAtEnd(stickyComment);
