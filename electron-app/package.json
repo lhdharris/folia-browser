@@ -1,6 +1,6 @@
 {
-  "name": "folia-browser-dev",
-  "version": "2.0.0",
+  "name": "folia-browser",
+  "version": "2.1.0",
   "description": "A browser with many limitations that will help you become happier and more virtuous — or at least more attentive to things other than the internet.",
   "main": "main.js",
   "author": {

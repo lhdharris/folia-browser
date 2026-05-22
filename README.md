@@ -6,7 +6,7 @@
 
 <p align="center"><em>A browser with many limitations that will help you become happier and more virtuous — or at least more attentive to things other than the internet.</em></p>
 
-<p align="center"><strong>Beta — 2.0.0-beta.2.</strong> Folia is in public beta; expect rough edges and breaking changes between releases.</p>
+<p align="center"><strong>2.1.0.</strong> Stable; auto-updates from the GitHub releases feed.</p>
 
 ---
 
