@@ -736,14 +736,14 @@ function createWindow(url, opener, options = {}) {
     // Cache the latest title + URL on the BrowserWindow itself so the
     // win.on('closed') handler can record the page into "previously closed
     // Folias" — by then wvContents is already destroyed and can't be read.
-    wvContents.on('page-title-updated', (e) => {
-      win._lastPageTitle = (e.title || '').trim() || null;
+    wvContents.on('page-title-updated', (_e, title) => {
+      win._lastPageTitle = (title || '').trim() || null;
     });
-    wvContents.on('did-navigate', (e) => {
-      win._lastUrl = e.url || null;
+    wvContents.on('did-navigate', (_e, url) => {
+      win._lastUrl = url || null;
     });
-    wvContents.on('did-navigate-in-page', (e) => {
-      if (e.isMainFrame && e.url) win._lastUrl = e.url;
+    wvContents.on('did-navigate-in-page', (_e, url, isMainFrame) => {
+      if (isMainFrame && url) win._lastUrl = url;
     });
 
     // getDisplayMedia (screen sharing). Chromium rejects this by default in

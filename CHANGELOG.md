@@ -5,6 +5,16 @@ All notable changes to Folia Browser are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.1] — 2026-05-21
+
+Patch release.
+
+- Fix "Previously closed Folias" submenu always being empty. The
+  `did-navigate` / `page-title-updated` listeners in main.js used
+  `(e) => e.url` but Electron's signature is `(event, url, ...)` —
+  so the per-window `_lastUrl` / `_lastPageTitle` cache that the
+  closed-folias entry reads at `win.on('closed')` was never populated.
+
 ## [2.1.0] — 2026-05-21
 
 Five sticky-note + window-management improvements.
