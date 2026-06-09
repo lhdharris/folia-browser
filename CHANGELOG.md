@@ -5,6 +5,34 @@ All notable changes to Folia Browser are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.2] — 2026-06-08
+
+Patch release — bug fixes, macOS polish, and an Electron/Chromium update.
+
+- Bump the bundled Castlabs Electron from `42.0.0+wvcus` to `42.3.3+wvcus`
+  so the embedded Chromium reports a current version (some sites were
+  warning that the browser was out of date).
+- Stop the white-bar flash while a window shrinks to a sticky: the native
+  window background is now painted the note colour for the duration of the
+  resize, so the compositor never shows browse-mode white as the web buffer
+  catches up.
+- Keep the mouse cursor visible while shrinking to a sticky on macOS — the
+  shrink animation no longer drives Cocoa's native window animator, which
+  suppressed the cursor.
+- Fix the macOS dock running-dot and the app's menu bar disappearing when
+  only sticky windows were left open. Stickies no longer mark themselves as
+  full-screen-auxiliary windows on macOS.
+- Restore window geometry correctly when leaving HTML5 fullscreen (e.g.
+  YouTube) on Linux — the window no longer clings to the top-right corner.
+- Remember the last folder used for "Save page as PDF" and default the save
+  dialog there next time.
+- Stop the app freezing if you pressed Back while a page was being saved as
+  PDF: the render is guarded against a closed page and bounded by a timeout.
+- Add a footer note to the "Previously closed Folias" menu indicating only
+  the 20 most-recent entries are kept.
+- Solidify the primary action button (e.g. the screen-picker "Share"
+  button), which previously read as washed-out and hard to see.
+
 ## [2.1.1] — 2026-05-21
 
 Patch release.

@@ -136,22 +136,23 @@ label input {
 
 .action {
   padding: 6px 14px;
-  border: 1px solid #b8b8b8;
+  border: 1px solid #a8a8a8;
   border-radius: 4px;
-  background: #ffffff;
-  color: #222;
+  background: #efefef;
+  color: #1a1a1a;
   font: inherit;
+  font-weight: 500;
   cursor: pointer;
   transition: background 0.1s, border-color 0.1s, color 0.18s ease, opacity 0.18s ease;
 }
 
 .action:hover {
-  background: #f3f3f3;
+  background: #e4e4e4;
   border-color: #9a9a9a;
 }
 
 .action:active {
-  background: #e6e6e6;
+  background: #d9d9d9;
 }
 
 /* Brief green confirmation flash on action buttons after their work

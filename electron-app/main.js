@@ -40,6 +40,10 @@ const SETTINGS_DEFAULTS = {
   drmEnabled: false,
   downloadPath: null,
   askDownloadPath: false,
+  // Last directory the user saved a "page as PDF" to. null → fall back to the
+  // download dir. Remembered separately from downloadPath because the PDF save
+  // dialog and background downloads are independent flows.
+  lastPdfDir: null,
   zoom: 1,
   // Per-site permission grants. hostname -> true (allow) | false (block).
   // Absence means "ask next time". Notifications are intentionally omitted —
@@ -173,15 +177,27 @@ function stickyBoundsFor(cur) {
 function pinStickyOnTop(win) {
   if (win.isDestroyed()) return;
   win.setAlwaysOnTop(true, 'floating');
-  try {
-    win.setVisibleOnAllWorkspaces(false, { visibleOnFullScreen: true });
-  } catch {}
+  // The visibleOnFullScreen pin is a Wayland hardening (compositors drop the
+  // always-on-top level on configure events, so it's re-asserted after resize).
+  // It must NOT run on macOS: visibleOnFullScreen sets the NSWindow's
+  // FullScreenAuxiliary collection behaviour, turning the sticky into an
+  // "auxiliary" window. Once every open window is auxiliary — e.g. the user
+  // has only stickies left — the app loses its regular-window presence, so the
+  // dock running-dot and the global menu bar disappear and the app can no
+  // longer be activated. alwaysOnTop alone keeps stickies floating on macOS.
+  if (process.platform !== 'darwin') {
+    try {
+      win.setVisibleOnAllWorkspaces(false, { visibleOnFullScreen: true });
+    } catch {}
+  }
 }
 
 function unpinStickyOnTop(win) {
   if (win.isDestroyed()) return;
   win.setAlwaysOnTop(false);
-  try { win.setVisibleOnAllWorkspaces(false); } catch {}
+  if (process.platform !== 'darwin') {
+    try { win.setVisibleOnAllWorkspaces(false); } catch {}
+  }
 }
 
 // Fix the sticky's size so neither the user nor the WM's title-bar gesture
@@ -287,6 +303,16 @@ function colorForEntry(info) {
 function sendColorToWindow(winId, color) {
   const w = BrowserWindow.fromId(winId);
   if (w && !w.isDestroyed()) w.webContents.send('window-color', color);
+}
+
+// The colour to paint a sticky window's *native* backgroundColor while it's
+// shrunken. Mirrors what the #sticky-overlay shows (colorForEntry → --toolbar-bg,
+// with the same #FFFFE0 fallback the CSS uses). Painting the native background
+// to match means the Wayland compositor shows the note colour — not browse-mode
+// white — in the frames where the web buffer lags the window resize, which is
+// what produced the "white bars while shrinking" flash.
+function stickyNativeColor(win) {
+  return colorForEntry(windowHues.get(win.id) || {}) || STICKY_LOCK_COLOR;
 }
 
 function recomputeHues() {
@@ -425,14 +451,12 @@ function animateBounds(win, target, ms) {
         if (!win.isDestroyed()) win._animating = false;
       }, 250);
     };
-    if (process.platform === 'darwin') {
-      // Native macOS animation. No completion callback exposed by Electron,
-      // so resolve after the requested duration — close enough for the
-      // renderer's "focus comment after shrink" sequencing.
-      win.setBounds(target, true);
-      setTimeout(done, ms);
-      return;
-    }
+    // All platforms use the JS-driven setBounds loop below. macOS previously
+    // used the native Cocoa animator (`setBounds(target, true)`), but that
+    // hid the mouse cursor for the duration of the shrink animation — the
+    // window-server suppresses the cursor while it drives an NSWindow frame
+    // animation. The stepwise (non-animated) setBounds ticks don't trigger
+    // that, and the eased loop is smooth enough at ~33fps.
     const start = win.getBounds();
     const t0 = Date.now();
     const tick = () => {
@@ -684,6 +708,9 @@ function createWindow(url, opener, options = {}) {
     }
     pinStickyOnTop(win);
     lockStickySize(win, initialBounds.width, initialBounds.height);
+    // Match the native background to the note colour so restoring (growing)
+    // this lazy sticky doesn't flash browse-mode white — see stickyNativeColor.
+    win.setBackgroundColor(stickyNativeColor(win));
   }
 
   // Empty hash → renderer shows the search bar and waits for input. For a
@@ -764,6 +791,10 @@ function createWindow(url, opener, options = {}) {
     // gates it so HTML fullscreen requests pass through unscathed.
     wvContents.on('enter-html-full-screen', () => {
       win._htmlFullscreen = true;
+      // Remember the pre-fullscreen geometry so it can be restored on exit —
+      // see leave-html-full-screen for the Linux corner-cling bug.
+      win._preFsMaximized = win.isMaximized();
+      win._preFsBounds = win.getBounds();
       if (!win.isFullScreen()) win.setFullScreen(true);
       win.webContents.send('html-fullscreen', true);
     });
@@ -771,6 +802,20 @@ function createWindow(url, opener, options = {}) {
       win._htmlFullscreen = false;
       if (win.isFullScreen()) win.setFullScreen(false);
       win.webContents.send('html-fullscreen', false);
+      // On Linux/Wayland, setFullScreen(false) drops a previously-maximized
+      // window to a default-positioned "normal" rect — it ends up clinging to
+      // the top-right corner. Re-assert the captured geometry once the
+      // compositor has processed the un-fullscreen (a tick later; doing it
+      // synchronously races the in-flight state change).
+      if (process.platform === 'linux') {
+        const wasMax = win._preFsMaximized;
+        const bounds = win._preFsBounds;
+        setTimeout(() => {
+          if (win.isDestroyed() || win._htmlFullscreen || win.isFullScreen()) return;
+          if (wasMax) win.maximize();
+          else if (bounds) win.setBounds(bounds);
+        }, 120);
+      }
     });
 
     wvContents.setWindowOpenHandler(({ url: newUrl, disposition }) => {
@@ -1329,6 +1374,12 @@ ipcMain.handle('wm-sticky-shrink', async (e, payload = {}) => {
     sendColorToWindow(win.id, STICKY_LOCK_COLOR);
   }
 
+  // Paint the native window background the note colour before the resize so
+  // the compositor never flashes browse-mode white while the web buffer
+  // catches up to the shrinking window — see stickyNativeColor. Reset to
+  // white in wm-sticky-restore once the window is full-size again.
+  win.setBackgroundColor(stickyNativeColor(win));
+
   // Float above other windows so the user doesn't lose track of parked
   // notes when working in another window. Pin before AND after the
   // resize — see pinStickyOnTop for why.
@@ -1398,6 +1449,11 @@ ipcMain.handle('wm-sticky-restore', async (e) => {
   // update — no visible jump — and gets WM gestures (dblclick title bar,
   // drag-from-top) working as the user expects again.
   if (wasMaximized && !win.isDestroyed()) win.maximize();
+
+  // Back to browse mode: native background returns to white now that the
+  // window is full-size and the overlay is about to fade out. See the shrink
+  // handler / stickyNativeColor for why it was the note colour while parked.
+  if (!win.isDestroyed()) win.setBackgroundColor('#ffffff');
 
   scheduleSaveStickies();
   return { deferredUrl };
@@ -1534,13 +1590,18 @@ async function savePageAsPdf(win, guest) {
     // download — always prompt for filename + location, regardless of the
     // askDownloadPath setting which only governs background downloads.
     const res = await dialog.showSaveDialog(win, {
-      defaultPath: path.join(effectiveDownloadDir(), `${safe}.pdf`),
+      defaultPath: path.join(settings.lastPdfDir || effectiveDownloadDir(), `${safe}.pdf`),
       filters: [{ name: 'PDF', extensions: ['pdf'] }],
       title: 'Save page as PDF',
     });
     if (res.canceled || !res.filePath) return;
     const savePath = res.filePath;
     const filename = path.basename(savePath);
+    // Remember the chosen folder so the next PDF save defaults here. Recorded
+    // as soon as the user picks (not on success) so a later print failure still
+    // leaves the dialog pointing where they last meant to save.
+    settings.lastPdfDir = path.dirname(savePath);
+    writeSettings();
 
     // Ring appears after the dialog closes so it's feedback for the actual
     // save work (printToPDF + write), which can take a few seconds on long
@@ -1550,7 +1611,21 @@ async function savePageAsPdf(win, guest) {
     send({ kind: 'started', id, filename });
 
     try {
-      const pdf = await guest.printToPDF({ printBackground: true });
+      // If the user navigated away (Back) or closed the page between the save
+      // dialog and here, the guest may be gone — bail cleanly instead of
+      // calling printToPDF on a dead webContents.
+      if (!guest || guest.isDestroyed()) {
+        throw new Error('The page was closed before it could be saved.');
+      }
+      // printToPDF can hang indefinitely if the guest navigates mid-render
+      // (e.g. the user hits Back while the save is in flight), which froze the
+      // app: the download ring stuck at 0% with no resolution. Race it against
+      // a timeout so a stalled render surfaces as a failure instead.
+      const pdf = await Promise.race([
+        guest.printToPDF({ printBackground: true }),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Timed out while rendering the PDF.')), 60000)),
+      ]);
       await fs.promises.writeFile(savePath, pdf);
       send({ kind: 'done', id, filename, savePath });
     } catch (err) {

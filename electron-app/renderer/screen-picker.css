@@ -146,22 +146,23 @@ footer {
 
 .action {
   padding: 7px 18px;
-  border: 1px solid #b8b8b8;
+  border: 1px solid #a8a8a8;
   border-radius: 4px;
-  background: #ffffff;
-  color: #222;
+  background: #efefef;
+  color: #1a1a1a;
   font: inherit;
+  font-weight: 500;
   cursor: pointer;
   transition: background 0.1s, border-color 0.1s, opacity 0.1s;
 }
 
 .action:hover:not(:disabled) {
-  background: #f3f3f3;
+  background: #e4e4e4;
   border-color: #9a9a9a;
 }
 
 .action:active:not(:disabled) {
-  background: #e6e6e6;
+  background: #d9d9d9;
 }
 
 .action:disabled {
@@ -170,12 +171,17 @@ footer {
 }
 
 .action.primary {
-  background: #89cff0;
-  border-color: #89cff0;
+  background: #2f6fed;
+  border-color: #2f6fed;
   color: #ffffff;
 }
 
 .action.primary:hover:not(:disabled) {
-  background: #6fc1e8;
-  border-color: #6fc1e8;
+  background: #225fd6;
+  border-color: #225fd6;
+}
+
+.action.primary:active:not(:disabled) {
+  background: #1d52ba;
+  border-color: #1d52ba;
 }

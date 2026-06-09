@@ -6,7 +6,7 @@
 
 <p align="center"><em>A browser with many limitations that will help you become happier and more virtuous — or at least more attentive to things other than the internet.</em></p>
 
-<p align="center"><strong>2.1.1.</strong> Stable; auto-updates from the GitHub releases feed.</p>
+<p align="center"><strong>2.1.2.</strong> Stable; auto-updates from the GitHub releases feed.</p>
 
 ---
 

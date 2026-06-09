@@ -785,6 +785,13 @@ async function showClosedSubmenu() {
       });
       closedSubmenu.appendChild(btn);
     }
+    // Footer reminding the user the list is capped (mirrors CLOSED_FOLIAS_MAX
+    // in main.js). Only shown when there's a list — the empty state already
+    // says everything it needs to.
+    const note = document.createElement('div');
+    note.className = 'footer-note';
+    note.textContent = 'Only the last 20 Folias are remembered.';
+    closedSubmenu.appendChild(note);
   }
   closedSubmenu.hidden = false;
   closedFoliasItem.classList.add('open');
