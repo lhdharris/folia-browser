@@ -752,6 +752,14 @@ function createWindow(url, opener, options = {}) {
     // an opaque white full-bleed background. (Pattern from res/notation-app.)
     transparent: true,
     backgroundColor: '#00000000',
+    // macOS rounds + shadows windows by default. With a transparent frameless
+    // window whose browse-mode content (#app) is a hard square, the corners are
+    // where Cocoa's rounded mask disagrees with the opaque content, and the
+    // antialiased corner pixels don't get invalidated as the window moves —
+    // they smear/trail over background windows. Squaring the OS window removes
+    // the mismatch. Sticky-mode's 14px rounding is drawn in content (the
+    // transparent area outside #sticky-overlay), so it's unaffected.
+    roundedCorners: false,
     resizable: true,
     autoHideMenuBar: true,
     icon: path.join(__dirname, 'renderer', 'folia-icon.svg'),
