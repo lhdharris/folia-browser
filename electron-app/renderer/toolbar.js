@@ -36,6 +36,26 @@ function applyToolbarColor(color) {
   } else {
     document.documentElement.style.removeProperty('--toolbar-bg');
   }
+  applyStickyBorder(color);
+}
+
+// Post-it outline colour: a darker same-hue tone derived from the note
+// colour, painted by the #sticky-overlay::after border in style.css. The
+// colour strings main pushes are either hsl(h, 50%, 90%) pastels or the
+// literal #FFFFE0 sticky-yellow lock; anything unrecognised (or no tint)
+// falls back to the yellow's companion border.
+function applyStickyBorder(color) {
+  let border = null;
+  if (typeof color === 'string') {
+    const m = color.match(/hsl\(\s*(-?\d+(?:\.\d+)?)\s*,/i);
+    if (m) border = `hsl(${m[1]}, 45%, 78%)`;
+    else if (color.toLowerCase() === '#ffffe0') border = '#e6dca0';
+  }
+  if (border) {
+    document.documentElement.style.setProperty('--sticky-border', border);
+  } else {
+    document.documentElement.style.removeProperty('--sticky-border');
+  }
 }
 
 window.wm.getWindowColor().then(applyToolbarColor);
@@ -636,9 +656,21 @@ webview.addEventListener('did-start-loading', hideWebviewError);
 // (ERR_ABORTED) and sub-resource failures (isMainFrame === false) skip
 // the overlay so a clicked link that cancels mid-load doesn't blank the
 // page the user is currently looking at.
-const errorEl       = document.getElementById('webview-error');
-const errorTitleEl  = errorEl.querySelector('.webview-error-title');
-const errorDetailEl = errorEl.querySelector('.webview-error-detail');
+const errorEl        = document.getElementById('webview-error');
+const errorTitleEl   = errorEl.querySelector('.webview-error-title');
+const errorDetailEl  = errorEl.querySelector('.webview-error-detail');
+const errorProceedEl = document.getElementById('webview-error-proceed');
+let   certFailedUrl  = null;  // URL to retry when "Proceed anyway" is clicked
+
+function isCertErrorCode(code) {
+  return code <= -200 && code >= -299;
+}
+
+errorProceedEl.addEventListener('click', () => {
+  if (!certFailedUrl) return;
+  window.wm.proceedWithCertError(certFailedUrl);
+  hideWebviewError();  // the reload's did-start-loading also clears it
+});
 
 function hostFromUrl(u) {
   try { return new URL(u).hostname; } catch { return u; }
@@ -669,7 +701,7 @@ function messageForFailure(evt) {
       detail: 'The site is sending content over a plain HTTP connection.',
     };
   }
-  if (code <= -200 && code >= -299) {
+  if (isCertErrorCode(code)) {
     return {
       title: `${host || 'This site'}'s security certificate can't be verified`,
       detail: desc,
@@ -689,11 +721,20 @@ function showWebviewError(evt) {
   errorTitleEl.textContent = title;
   errorDetailEl.textContent = detail || '';
   errorDetailEl.hidden = !detail;
+  // Offer "Proceed anyway" only for TLS verification failures.
+  if (isCertErrorCode(evt.errorCode)) {
+    certFailedUrl = evt.validatedURL || null;
+    errorProceedEl.hidden = !certFailedUrl;
+  } else {
+    certFailedUrl = null;
+    errorProceedEl.hidden = true;
+  }
   errorEl.hidden = false;
 }
 
 function hideWebviewError() {
   if (!errorEl.hidden) errorEl.hidden = true;
+  errorProceedEl.hidden = true;
 }
 
 // Window controls. The "minimize" slot has been replaced with the sticky-
@@ -1169,20 +1210,21 @@ window.addEventListener('resize', () => { if (!popover.hidden) positionPopover()
 
 // ---- Sticky-note minimize ---------------------------------------------
 // Replaces the OS-level minimize. Clicking #sticky shrinks the OS window
-// to a small on-desktop "post-it" carrying:
-//   - the action label as a bold prefix-verb-style title ("Visited X" /
-//     "Searched for 'Y'")
-//   - an italic contenteditable comment for the user to remind themselves
-//     why they parked it
-// Clicking anywhere on the sticky body (excluding the comment area and
-// the hover-only ⋮ menu) restores the window. Main owns the bounds
-// animation; renderer just toggles `body.sticky-mode`.
+// to a small on-desktop "post-it" (chrome modelled on res/notation-app):
+//   - an opaque title strip at the top is the drag handle, carrying the
+//     page title ("Visited X" / "Searched for 'Y'" until one arrives) and
+//     the always-visible action buttons (+ / restore / close)
+//   - an italic contenteditable comment fills the body and scrolls behind
+//     the strip
+//   - a bottom-right grip resizes the post-it
+// Main owns the bounds animation; renderer just toggles `body.sticky-mode`.
 
 const stickyBtn       = document.getElementById('sticky');
 const stickyOverlay   = document.getElementById('sticky-overlay');
 const stickyTitle     = document.getElementById('sticky-title');
 const stickyComment   = document.getElementById('sticky-comment');
 const stickyAudioIcon = document.getElementById('sticky-audio-icon');
+const stickyResize    = document.getElementById('sticky-resize');
 
 // Cross-fade duration when restoring from sticky. Kept in sync with the
 // opacity transition on #sticky-overlay.fading-out in style.css so the
@@ -1236,9 +1278,16 @@ stickyBtn.addEventListener('click', async () => {
   // is empty: don't clobber a comment that's already been typed across
   // previous shrink cycles (the overlay stays in the DOM, so its text
   // persists across sticky/restore round-trips within a window's life).
+  // Race against a short timeout: executeJavaScript queues behind the
+  // guest's page load, so a click while a page is still loading would
+  // otherwise stall the shrink until the load finishes. A mid-load page
+  // has no rendered selection to grab anyway — give up fast and shrink.
   if (!(stickyComment.textContent || '').trim()) {
     try {
-      const selection = await webview.executeJavaScript('window.getSelection().toString()');
+      const selection = await Promise.race([
+        webview.executeJavaScript('window.getSelection().toString()'),
+        new Promise((resolve) => setTimeout(resolve, 150, '')),
+      ]);
       const trimmed = (selection || '').trim();
       if (trimmed) stickyComment.textContent = trimmed;
     } catch {}
@@ -1315,25 +1364,59 @@ document.getElementById('sticky-x').addEventListener('click', (e) => {
   window.wm.close();
 });
 
-// Drag is the OS's job: `#sticky-overlay` is marked `-webkit-app-region:
-// drag` in style.css, so the compositor handles the move via
-// xdg_toplevel.move on Wayland (the only way to reposition a window there
-// — clients aren't allowed to call setBounds({x,y,…}) on Wayland). The
-// comment area and action buttons opt back out with `no-drag` so they
-// remain interactive.
+// Drag is the OS's job: the title strip (`#sticky-header`) is marked
+// `-webkit-app-region: drag` in style.css, so the compositor handles the
+// move via xdg_toplevel.move on Wayland (the only way to reposition a
+// window there — clients aren't allowed to call setBounds({x,y,…}) on
+// Wayland). The action buttons opt back out with `no-drag` so they remain
+// interactive; the comment body is plain editable text, not a drag region.
+// A dblclick on the strip does nothing: min==max suppresses the WM's
+// maximize gesture at the compositor, and main's `maximize` backstop snaps
+// back any WM that fires it anyway.
 
-// Dblclick on a sticky triggers the WM's maximize gesture, which on
-// GNOME Wayland we can't cleanly suppress (all the post-hoc options
-// either drift the size or strand the window in the top-left corner —
-// see the `maximize` listener in main.js for the full pathology).
-// Instead main re-routes the gesture through this signal, so dblclick
-// acts as a "restore" gesture — the same as clicking the maximize-square
-// action button.
-window.wm.onStickyRestoreRequested(() => {
-  if (document.body.classList.contains('sticky-mode')) {
-    restoreFromSticky();
+// ---- Sticky resize grip -------------------------------------------------
+// Frameless Wayland windows expose no compositor resize edges, so the
+// bottom-right grip drives the resize from relative pointer deltas
+// (movementX/Y — the only reliable signal where absolute coords aren't
+// exposed). We accumulate an absolute target size and hand it to main
+// (throttled to one rAF), which clamps + applies it with the top-left
+// anchored, so the note grows toward the grip. (From res/notation-app.)
+let stickyResizeState = null;  // { w, h, raf, pointerId }
+
+stickyResize.addEventListener('pointerdown', (e) => {
+  if (!document.body.classList.contains('sticky-mode')) return;
+  e.preventDefault();
+  try { stickyResize.setPointerCapture(e.pointerId); } catch {}
+  stickyResizeState = { w: window.innerWidth, h: window.innerHeight, raf: 0, pointerId: e.pointerId };
+  // Main paints the native background the note colour (the area the
+  // post-it grows into) and lifts the fixed-size pin for the drag.
+  window.wm.stickyResizeBegin();
+});
+
+stickyResize.addEventListener('pointermove', (e) => {
+  if (!stickyResizeState) return;
+  stickyResizeState.w += e.movementX;
+  stickyResizeState.h += e.movementY;
+  if (!stickyResizeState.raf) {
+    stickyResizeState.raf = requestAnimationFrame(() => {
+      if (!stickyResizeState) return;
+      stickyResizeState.raf = 0;
+      window.wm.setStickySize(stickyResizeState.w, stickyResizeState.h);
+    });
   }
 });
+
+function endStickyResize() {
+  if (!stickyResizeState) return;
+  if (stickyResizeState.raf) cancelAnimationFrame(stickyResizeState.raf);
+  try { stickyResize.releasePointerCapture(stickyResizeState.pointerId); } catch {}
+  stickyResizeState = null;
+  // Main re-pins the size at the new bounds, restores the transparent
+  // native background, and persists the new post-it size.
+  window.wm.stickyResizeEnd();
+}
+stickyResize.addEventListener('pointerup', endStickyResize);
+stickyResize.addEventListener('pointercancel', endStickyResize);
 
 // Escape inside the comment defocuses it so the next click restores
 // instead of staying in the comment. Doesn't restore on its own — keep
@@ -1343,6 +1426,82 @@ document.addEventListener('keydown', (e) => {
   if (!document.body.classList.contains('sticky-mode')) return;
   if (document.activeElement === stickyComment) stickyComment.blur();
 });
+
+// ---- Find in page ----------------------------------------------------------
+// Driven entirely by the <webview> element's findInPage/stopFindInPage and the
+// found-in-page event — no main-process round-trip for the search itself.
+const findBar   = document.getElementById('find-bar');
+const findInput = document.getElementById('find-input');
+const findCount = document.getElementById('find-count');
+const findPrev  = document.getElementById('find-prev');
+const findNext  = document.getElementById('find-next');
+const findClose = document.getElementById('find-close');
+
+function openFind() {
+  if (!actionLabel) return;  // nothing loaded — webview is blank
+  findBar.hidden = false;
+  findInput.focus();
+  findInput.select();
+  if (findInput.value.trim()) runFind(findInput.value.trim(), { findNext: false });
+}
+
+function closeFind() {
+  if (findBar.hidden) return;
+  findBar.hidden = true;
+  findBar.classList.remove('no-results');
+  findCount.textContent = '';
+  webview.stopFindInPage('clearSelection');
+  webview.focus();
+}
+
+function runFind(query, { findNext = false, forward = true } = {}) {
+  if (!query) {
+    webview.stopFindInPage('clearSelection');
+    findCount.textContent = '';
+    findBar.classList.remove('no-results');
+    return;
+  }
+  // Electron quirk: passing findNext:false explicitly suppresses the
+  // found-in-page result event. For a fresh search, omit the key entirely;
+  // only set findNext when advancing to the next/previous match.
+  const opts = { forward };
+  if (findNext) opts.findNext = true;
+  webview.findInPage(query, opts);
+}
+
+findInput.addEventListener('input', () => runFind(findInput.value.trim(), { findNext: false }));
+findInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    runFind(findInput.value.trim(), { findNext: true, forward: !e.shiftKey });
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    closeFind();
+  }
+});
+findNext.addEventListener('click',  () => runFind(findInput.value.trim(), { findNext: true, forward: true }));
+findPrev.addEventListener('click',  () => runFind(findInput.value.trim(), { findNext: true, forward: false }));
+findClose.addEventListener('click', closeFind);
+
+webview.addEventListener('found-in-page', (e) => {
+  const { matches = 0, activeMatchOrdinal = 0 } = e.result || {};
+  if (!findInput.value.trim()) { findCount.textContent = ''; findBar.classList.remove('no-results'); return; }
+  findCount.textContent = `${matches ? activeMatchOrdinal : 0}/${matches}`;
+  findBar.classList.toggle('no-results', matches === 0);
+});
+
+// Re-running a load invalidates the highlight; drop the bar's state.
+webview.addEventListener('did-start-loading', () => { if (!findBar.hidden) closeFind(); });
+
+// Ctrl/Cmd+F from the host (toolbar focused). Guest-focused presses arrive via
+// onToggleFind below.
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'f' || e.key === 'F')) {
+    e.preventDefault();
+    openFind();
+  }
+});
+window.wm.onToggleFind(openFind);
 
 // Bootstrap. Called last so all module-level consts (sticky DOM refs, the
 // hue/colour bridge, etc.) are initialised before init() touches them.

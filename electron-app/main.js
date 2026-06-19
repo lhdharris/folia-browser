@@ -16,6 +16,67 @@ const { startUpdateChecks } = require('./updater');
 // window in the real install instead.
 app.setName(app.isPackaged ? 'Folia Browser' : 'Folia Browser (dev)');
 
+// Linux/Wayland: run under XWayland instead of native Wayland. GNOME's
+// Wayland side has no client protocol for keep-above, so the sticky
+// post-its' setAlwaysOnTop() is a silent no-op there; under XWayland,
+// Mutter honors _NET_WM_STATE_ABOVE and the post-its float as designed.
+// Chromium picks the ozone platform before main.js runs, so
+// app.commandLine.appendSwitch('ozone-platform', …) is silently ignored
+// (verified empirically) — the flag has to be on the real command line,
+// which means respawning ourselves with it appended.
+//
+// Several non-obvious constraints, all verified the hard way:
+// - app.relaunch is NOT used: it offers no env control (see CHROME_DESKTOP
+//   below) and its relauncher child died before reaching main.js.
+// - The guard reads process.argv, NOT app.commandLine.hasSwitch: Chromium
+//   writes the *resolved* platform (ozone-platform=wayland) into its
+//   internal command line during init, so hasSwitch is always true here.
+//   The argv check doubles as the already-respawned guard (the respawned
+//   instance carries the flag) and lets a user's explicit --ozone-platform
+//   win.
+// - Electron setenv()s CHROME_DESKTOP into its own environment during
+//   boot, and a fresh Electron that *inherits* it crashes its sandboxed
+//   zygote before reaching main.js (silent SIGTRAP in the zygote, then
+//   FATAL "Check failed" in zygote_host_impl_linux.cc on the browser
+//   side). Bisected to exactly this variable; scrubbing it is what makes
+//   the self-respawn viable at all.
+// - When a primary Folia is already running, skip the respawn: this
+//   process only exists to forward argv via the single-instance lock
+//   (line ~1830), and respawning first would add a whole extra Electron
+//   boot to every link-click that opens a window in the running primary.
+//   The probe reads Chromium's SingletonLock symlink (hostname-pid) and
+//   signal-0 checks the pid. Stale-lock false positives just mean one
+//   session degrades to native Wayland (works, post-its don't float).
+// - Must run before requestSingleInstanceLock() so the exiting process
+//   never holds the lock against its own respawn.
+function primaryInstanceAlive() {
+  try {
+    const target = fs.readlinkSync(path.join(app.getPath('userData'), 'SingletonLock'));
+    const pid = parseInt(target.slice(target.lastIndexOf('-') + 1), 10);
+    if (!(pid > 0)) return false;
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+const onWaylandSession = process.platform === 'linux' &&
+  (process.env.XDG_SESSION_TYPE === 'wayland' || !!process.env.WAYLAND_DISPLAY);
+if (onWaylandSession &&
+    !process.argv.some((a) => a.startsWith('--ozone-platform')) &&
+    !primaryInstanceAlive()) {
+  const { spawn } = require('child_process');
+  const env = { ...process.env };
+  delete env.CHROME_DESKTOP;
+  const child = spawn(
+    process.execPath,
+    process.argv.slice(1).concat(['--ozone-platform=x11']),
+    { detached: true, stdio: 'ignore', env }
+  );
+  child.unref();
+  app.exit(0);
+}
+
 // Widevine is provided by Castlabs Electron-for-Content (the `electron` dep
 // is their VMP-signed fork, see DRM_SETUP.md). The CDM is installed by
 // Chromium's Component Updater Service the first time `components.whenReady()`
@@ -148,6 +209,10 @@ const HUE_SPACING_FACTOR = 0.7;
 // anchored at the current top-left.
 const STICKY_BASE_W = 280;
 const STICKY_BASE_H = 200;
+// Floor for the corner-grip resize — a sticky stays grabbable/readable, it
+// just can't be shrunk into nothing. (Model from res/notation-app.)
+const STICKY_MIN_W = 180;
+const STICKY_MIN_H = 130;
 const STICKY_LOCK_COLOR = '#FFFFE0';
 const STICKY_ANIM_MS = 260;
 
@@ -200,50 +265,49 @@ function unpinStickyOnTop(win) {
   }
 }
 
-// Fix the sticky's size so neither the user nor the WM's title-bar gesture
-// can resize it. Two platform paths because the gestures we're defending
-// against live at different layers:
+// Pin the sticky to a fixed size *at rest*. Two platform paths because the
+// gestures we're defending against live at different layers:
 //   - Linux/Windows: the WM reads min == max as "fixed-size" and (on
-//     Wayland especially) suppresses dblclick-to-maximize at the compositor.
-//     setResizable(false) doesn't carry the same signal — Mutter still
-//     fires the maximize-state-flag on dblclick — so min/max is the lever
-//     for gesture defense. setResizable(false) is *also* applied, but for
-//     a different reason: Chromium's frameless-window code draws its own
-//     edge resize hover cursors (↔ ↕ ⤡) keyed off the resizable flag, not
-//     off the min/max constraints, so without it the cursor still implies
-//     "drag me to resize" even though min == max blocks the actual resize.
-//   - macOS: setMinimumSize/setMaximumSize would clamp the size correctly,
-//     but Cocoa's NSWindow.zoom() (the title-bar dblclick gesture)
-//     computes a "standard frame" by clamping the screen visibleFrame
-//     to contentMaxSize and snapping the origin to the visibleFrame's
-//     bottom-left (macOS coords are bottom-left origin). Result: dblclick
-//     teleports the sticky to the bottom-left corner of the screen at
-//     sticky size and "maximize" doesn't fire reliably, so the post-hoc
-//     restore listener never runs. setResizable(false) is documented to
-//     make NSWindow.zoom a no-op (Apple: "If a window's style mask
-//     doesn't include NSWindowStyleMaskResizable, the title bar isn't
-//     double-clickable and zoom isn't called"), which disables the
-//     gesture at the source. Programmatic setBounds still works, so the
-//     shrink/restore animations are unaffected.
+//     Wayland especially) suppresses dblclick-to-maximize at the
+//     compositor. setResizable(false) doesn't carry the same signal —
+//     Mutter still fires the maximize-state-flag on dblclick — so min/max
+//     is the lever for gesture defense. setResizable(false) is *also*
+//     applied, for a different reason: on a frameless resizable window
+//     Chromium reserves the outermost few pixels as its own edge/corner
+//     resize hit zone — mouse events there never reach the DOM. The
+//     resize grip sits at right:2/bottom:2, squarely inside that zone, so
+//     with the flag left true the grip never sees pointerdown (and the
+//     edge cursors imply a resize that min==max then blocks anyway).
+//   - macOS: Cocoa's NSWindow.zoom() (the title-bar dblclick gesture)
+//     computes a "standard frame" that teleports the sticky to the
+//     screen's bottom-left. setResizable(false) is documented to make
+//     NSWindow.zoom a no-op, which disables the gesture at the source.
+//     Programmatic setBounds still works, so animations are unaffected.
 //
 // Linux-only ordering trap: Electron's setResizable on Linux saves the
-// current min/max when going false, and *restores* those saved values when
-// going true — so setResizable(true) called after setMinimumSize(0,0) /
-// setMaximumSize(0,0) clobbers the zeros with whatever was saved at lock
-// time (the sticky width/height). The sticky would then animate back to
-// its originalBounds but the WM would clamp it to sticky size and refuse
-// any subsequent resize. Order matters: setResizable first, explicit
-// min/max second — the explicit calls overwrite the restore on unlock,
-// and on lock the sequence is symmetric.
+// current min/max when going false, and *restores* those saved values
+// when going true. Order matters everywhere below: setResizable FIRST,
+// explicit min/max SECOND, so the explicit values always win over the
+// flag flip's save/restore.
 function lockStickySize(win, w, h) {
   if (win.isDestroyed()) return;
   if (process.platform === 'darwin') {
     win.setResizable(false);
   } else {
     win.setResizable(false);
-    win.setMinimumSize(w, h);
-    win.setMaximumSize(w, h);
+    win.setMinimumSize(Math.round(w), Math.round(h));
+    win.setMaximumSize(Math.round(w), Math.round(h));
   }
+}
+
+// Lift the fixed-size pin for the duration of a grip drag so main's setSize
+// ticks aren't clamped, keeping a small floor so the note can't be shrunk
+// into nothing. setResizable(true) first — see the ordering trap above.
+function relaxStickySize(win) {
+  if (win.isDestroyed() || process.platform === 'darwin') return;
+  win.setResizable(true);
+  win.setMinimumSize(STICKY_MIN_W, STICKY_MIN_H);
+  win.setMaximumSize(0, 0);
 }
 
 function unlockStickySize(win) {
@@ -433,7 +497,13 @@ function cascadedBoundsFrom(opener) {
 // comment area).
 const ANIM_TICK_MS = 30;
 
-function animateBounds(win, target, ms) {
+// `startOverride` (optional): animate from this rect instead of the live
+// bounds. A restore can arrive while the WM has the window mid-maximize
+// (drag-to-top fired just before the button click); reading getBounds()
+// there would animate full-screen → target and visibly shrink down. Snap
+// to the known post-it rect first — inside the _animating guard so the
+// geometry listeners ignore the snap.
+function animateBounds(win, target, ms, startOverride) {
   return new Promise((resolve) => {
     if (win.isDestroyed()) return resolve();
     // Flag so move-event listeners can distinguish "programmatic animation
@@ -457,7 +527,8 @@ function animateBounds(win, target, ms) {
     // window-server suppresses the cursor while it drives an NSWindow frame
     // animation. The stepwise (non-animated) setBounds ticks don't trigger
     // that, and the eased loop is smooth enough at ~33fps.
-    const start = win.getBounds();
+    let start = win.getBounds();
+    if (startOverride) { start = startOverride; win.setBounds(startOverride); }
     const t0 = Date.now();
     const tick = () => {
       if (win.isDestroyed()) return done();
@@ -606,6 +677,14 @@ function isLocalHost(host) {
   return /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(noPort);
 }
 
+// Non-web schemes we hand off to the OS (torrent client, mail app, dialer)
+// rather than trying to load in the webview. We deliberately do NOT register
+// Folia as the OS handler for these — we just launch whatever app is.
+const EXTERNAL_SCHEMES = ['magnet:', 'mailto:', 'tel:'];
+function isExternalScheme(u) {
+  return typeof u === 'string' && EXTERNAL_SCHEMES.some((s) => u.toLowerCase().startsWith(s));
+}
+
 function resolveUrl(arg) {
   if (!arg || arg.startsWith('-')) return searchUrl(arg || '');
   if (arg.startsWith('file://')) return arg;
@@ -667,7 +746,20 @@ function createWindow(url, opener, options = {}) {
     height: initialBounds.height,
     ...(initialBounds.x !== undefined ? { x: initialBounds.x, y: initialBounds.y } : {}),
     frame: false,
-    backgroundColor: '#ffffff',
+    // Transparent so sticky-mode's rounded post-it corners show through
+    // (style.css rounds #sticky-overlay at 14px; the area outside the
+    // radius must be see-through). Browse mode is unaffected — #app paints
+    // an opaque white full-bleed background. (Pattern from res/notation-app.)
+    transparent: true,
+    backgroundColor: '#00000000',
+    // macOS rounds + shadows windows by default. With a transparent frameless
+    // window whose browse-mode content (#app) is a hard square, the corners are
+    // where Cocoa's rounded mask disagrees with the opaque content, and the
+    // antialiased corner pixels don't get invalidated as the window moves —
+    // they smear/trail over background windows. Squaring the OS window removes
+    // the mismatch. Sticky-mode's 14px rounding is drawn in content (the
+    // transparent area outside #sticky-overlay), so it's unaffected.
+    roundedCorners: false,
     resizable: true,
     autoHideMenuBar: true,
     icon: path.join(__dirname, 'renderer', 'folia-icon.svg'),
@@ -708,9 +800,9 @@ function createWindow(url, opener, options = {}) {
     }
     pinStickyOnTop(win);
     lockStickySize(win, initialBounds.width, initialBounds.height);
-    // Match the native background to the note colour so restoring (growing)
-    // this lazy sticky doesn't flash browse-mode white — see stickyNativeColor.
-    win.setBackgroundColor(stickyNativeColor(win));
+    // Native background stays the transparent default ('#00000000') so the
+    // post-it's rounded corners are see-through from the first frame; the
+    // restore handler paints the note colour for the grow animation.
   }
 
   // Empty hash → renderer shows the search bar and waits for input. For a
@@ -790,31 +882,55 @@ function createWindow(url, opener, options = {}) {
     // fullscreen back to maximize (to preserve the chrome). _htmlFullscreen
     // gates it so HTML fullscreen requests pass through unscathed.
     wvContents.on('enter-html-full-screen', () => {
-      win._htmlFullscreen = true;
       // Remember the pre-fullscreen geometry so it can be restored on exit —
-      // see leave-html-full-screen for the Linux corner-cling bug.
-      win._preFsMaximized = win.isMaximized();
-      win._preFsBounds = win.getBounds();
+      // see leave-html-full-screen for the Linux corner-cling bug. Capture
+      // ONLY on the actual transition into fullscreen: pages re-fire this
+      // while already fullscreen (YouTube re-requests on player state
+      // changes), and re-capturing then would save the fullscreen rect
+      // itself — exiting would "restore" the window to monitor-sized bounds
+      // at the screen origin instead of where it really was.
+      if (!win._htmlFullscreen && !win.isFullScreen()) {
+        win._preFsMaximized = win.isMaximized();
+        win._preFsBounds = win.getBounds();
+      }
+      win._htmlFullscreen = true;
       if (!win.isFullScreen()) win.setFullScreen(true);
       win.webContents.send('html-fullscreen', true);
     });
     wvContents.on('leave-html-full-screen', () => {
       win._htmlFullscreen = false;
-      if (win.isFullScreen()) win.setFullScreen(false);
       win.webContents.send('html-fullscreen', false);
       // On Linux/Wayland, setFullScreen(false) drops a previously-maximized
-      // window to a default-positioned "normal" rect — it ends up clinging to
-      // the top-right corner. Re-assert the captured geometry once the
-      // compositor has processed the un-fullscreen (a tick later; doing it
-      // synchronously races the in-flight state change).
-      if (process.platform === 'linux') {
-        const wasMax = win._preFsMaximized;
-        const bounds = win._preFsBounds;
-        setTimeout(() => {
-          if (win.isDestroyed() || win._htmlFullscreen || win.isFullScreen()) return;
-          if (wasMax) win.maximize();
-          else if (bounds) win.setBounds(bounds);
-        }, 120);
+      // window to a default-positioned "normal" rect — it ends up clinging
+      // to a screen corner. Re-assert the captured geometry once the
+      // compositor has actually left fullscreen: wait for the window's own
+      // leave-full-screen event (a fixed timer raced the compositor and
+      // lost on slower un-fullscreen transitions), settle a tick, restore,
+      // and re-assert once more shortly after — some compositors re-place
+      // the window again right after the state change.
+      if (process.platform !== 'linux') {
+        if (win.isFullScreen()) win.setFullScreen(false);
+        return;
+      }
+      const wasMax = win._preFsMaximized;
+      const bounds = win._preFsBounds;
+      const restoreGeometry = () => {
+        if (win.isDestroyed() || win._htmlFullscreen || win.isFullScreen()) return;
+        if (wasMax) {
+          if (!win.isMaximized()) win.maximize();
+        } else if (bounds) {
+          win.setBounds(bounds);
+        }
+      };
+      const settle = () => {
+        setTimeout(restoreGeometry, 60);
+        setTimeout(restoreGeometry, 350);
+      };
+      if (win.isFullScreen()) {
+        win.once('leave-full-screen', settle);
+        win.setFullScreen(false);
+      } else {
+        settle();
       }
     });
 
@@ -836,6 +952,12 @@ function createWindow(url, opener, options = {}) {
       //
       // save-to-disk is denied; downloads come through session.on('will-download').
       if (disposition === 'save-to-disk') return { action: 'deny' };
+      // magnet/mailto/tel opened via target="_blank" or window.open — hand off
+      // to the OS instead of spawning an empty Folia window.
+      if (isExternalScheme(newUrl)) {
+        shell.openExternal(newUrl);
+        return { action: 'deny' };
+      }
       if (disposition === 'new-window') {
         return {
           action: 'allow',
@@ -848,6 +970,26 @@ function createWindow(url, opener, options = {}) {
       }
       createWindow(newUrl, win);
       return { action: 'deny' };
+    });
+
+    // In-page clicks on magnet:/mailto:/tel: links navigate the top frame to a
+    // scheme the webview can't load — intercept and hand off to the OS.
+    wvContents.on('will-navigate', (e, navUrl) => {
+      if (isExternalScheme(navUrl)) {
+        e.preventDefault();
+        shell.openExternal(navUrl);
+      }
+    });
+
+    // Ctrl/Cmd+F while the page (guest) has focus can't reach the host's
+    // document keydown listener — the keystroke goes to the guest renderer.
+    // Catch it here and tell the host to open the find bar.
+    wvContents.on('before-input-event', (e, input) => {
+      if (input.type !== 'keyDown') return;
+      if ((input.key || '').toLowerCase() === 'f' && (input.control || input.meta) && !input.shift && !input.alt) {
+        e.preventDefault();
+        if (!win.isDestroyed()) win.webContents.send('toggle-find');
+      }
     });
 
     // Permission handler. Three buckets:
@@ -915,6 +1057,15 @@ function createWindow(url, opener, options = {}) {
         );
       }
 
+      if (params.mediaType === 'image' && params.srcURL) {
+        template.push(
+          { label: 'Save image as…',      click: () => wvContents.downloadURL(params.srcURL) },
+          { label: 'Copy image',          click: () => wvContents.copyImageAt(params.x, params.y) },
+          { label: 'Copy image address',  click: () => clipboard.writeText(params.srcURL) },
+          { type: 'separator' },
+        );
+      }
+
       const ef = params.editFlags || {};
       const selText = (params.selectionText || '').replace(/\s+/g, ' ').trim();
       const searchItem = selText && {
@@ -961,24 +1112,18 @@ function createWindow(url, opener, options = {}) {
     });
   }
 
-  // Sticky-note windows can't be made truly maximize-inert on GNOME
-  // Wayland — Mutter handles the dblclick gesture before any JS can
-  // preventDefault, and the post-hoc options are all visibly broken:
-  //   - `unmaximize()` alone shaves a pixel off the size each cycle
-  //     (a Wayland configure-event race between min=max and the state
-  //     transition); the "shrinks once on dblclick" bug.
-  //   - Doing nothing leaves the window stuck in the top-left corner
-  //     where Mutter moved it as part of the maximize gesture.
-  //   - `unmaximize() + setBounds(stickyBounds)` accumulates shrink each
-  //     cycle (the original "shrinks to nothing" bug).
-  // Instead, repurpose the gesture: dblclicking a sticky restores it.
-  // The user can't actually maximize a sticky, so dblclick → restore is
-  // a natural UX, and the upcoming animateBounds in the restore handler
-  // wipes any size drift the unmaximize introduces.
+  // A double-click on the post-it's title strip must do nothing. min==max
+  // (lockStickySize) already suppresses the gesture at the compositor; this
+  // is the backstop for WMs that fire the maximize state-flag anyway
+  // (Mutter does): snap straight back to the exact post-it footprint and
+  // re-assert the float. stickyBounds is the recorded target rect, so
+  // repeated cycles don't accumulate the few-pixel unmaximize() drift.
+  // (Model from res/notation-app; restore is via the title-bar button.)
   win.on('maximize', () => {
     if (!win._sticky) return;
     win.unmaximize();
-    win.webContents.send('sticky-restore-requested');
+    if (win._sticky.stickyBounds) win.setBounds(win._sticky.stickyBounds);
+    pinStickyOnTop(win);
   });
 
   // Move tracking serves two related jobs:
@@ -1016,7 +1161,7 @@ function createWindow(url, opener, options = {}) {
     if (win._sticky) {
       const b = win.getBounds();
       win._sticky.stickyBounds = { x: b.x, y: b.y, width: b.width, height: b.height };
-      win._lastStickyBounds = { x: b.x, y: b.y };
+      win._lastStickyBounds = { x: b.x, y: b.y, width: b.width, height: b.height };
       scheduleSaveStickies();
     } else {
       win._lastStickyBounds = null;
@@ -1240,6 +1385,11 @@ function setPendingDownloadOwner(win, opts = {}) {
   pendingDownloadOnComplete = typeof opts.onComplete === 'function' ? opts.onComplete : null;
 }
 
+// Hosts the user has explicitly chosen to trust past a TLS verification
+// failure (via the error overlay's "Proceed anyway"). In-memory only —
+// cleared on restart so a bad cert is never permanently trusted.
+const trustedCertHosts = new Set();
+
 function attachDownloadHandler(sess) {
   if (sess.__foliaDlAttached) return;
   sess.__foliaDlAttached = true;
@@ -1332,19 +1482,21 @@ ipcMain.handle('wm-sticky-shrink', async (e, payload = {}) => {
   const wasMaximized = win.isMaximized();
   if (wasMaximized) win.unmaximize();
   const originalBounds = win.getBounds();
-  // Prefer the position the sticky was at last cycle (captured on restore /
-  // updated during sticky drags). If the user has since moved the full-size
-  // window, win._lastStickyBounds was cleared by the move tracker — we fall
-  // through to the default "shrink in place at the current top-left" path.
-  // Clamp to the current display's work area so a remembered position from
-  // a now-disconnected monitor doesn't strand the sticky off-screen.
+  // Prefer the position AND size the sticky had last cycle (captured on
+  // restore / updated during sticky drags and grip resizes). If the user
+  // has since moved the full-size window, win._lastStickyBounds was
+  // cleared by the move tracker — we fall through to the default "shrink
+  // in place at the current top-left, default size" path. Clamp to the
+  // current display's work area so a remembered position from a now-
+  // disconnected monitor doesn't strand the sticky off-screen.
   const sized = stickyBoundsFor(originalBounds);
-  const stickyBounds = win._lastStickyBounds
+  const last = win._lastStickyBounds;
+  const stickyBounds = last
     ? clampBoundsToDisplay({
-        x: win._lastStickyBounds.x,
-        y: win._lastStickyBounds.y,
-        width:  sized.width,
-        height: sized.height,
+        x: last.x,
+        y: last.y,
+        width:  Number.isFinite(last.width)  ? last.width  : sized.width,
+        height: Number.isFinite(last.height) ? last.height : sized.height,
       })
     : sized;
   // stickyBounds is stored so the maximize-intercept handler can reset to
@@ -1394,9 +1546,53 @@ ipcMain.handle('wm-sticky-shrink', async (e, payload = {}) => {
   // picks the right lever per platform — see its docs for the full
   // pathology (Wayland needs min==max as a fixed-size hint to the
   // compositor; macOS needs setResizable(false) so Cocoa's zoom: doesn't
-  // teleport the sticky to the screen's bottom-left corner).
+  // teleport the sticky to the screen's bottom-left corner). The grip
+  // (wm-sticky-resize-begin/end) relaxes and re-pins this around drags.
   lockStickySize(win, stickyBounds.width, stickyBounds.height);
 
+  // Back to the transparent native background now that the resize has
+  // settled, so the post-it's 14px rounded corners are see-through at rest.
+  win.setBackgroundColor('#00000000');
+
+  scheduleSaveStickies();
+});
+
+// Resize a post-it from the renderer's corner grip. `w`/`h` are an absolute
+// target the grip accumulated from relative pointer deltas (movementX/Y —
+// the only reliable signal on Wayland, where absolute coords aren't exposed
+// to the app). Clamp to the sticky floor; top-left stays anchored so the
+// note grows toward the grip. The end handler records the new stickyBounds.
+ipcMain.on('wm-sticky-resize', (e, { w, h } = {}) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  if (!win || win.isDestroyed() || !win._sticky) return;
+  if (!Number.isFinite(w) || !Number.isFinite(h)) return;
+  win.setSize(
+    Math.max(STICKY_MIN_W, Math.round(w)),
+    Math.max(STICKY_MIN_H, Math.round(h)),
+  );
+});
+
+// Grip drag start/end. On start we (a) paint the native window background
+// the note colour so the area the post-it grows into shows the note colour
+// — not transparency flashing through — before the renderer reflows, and
+// (b) lift the fixed-size pin so the setSize ticks above aren't clamped.
+// On end we re-pin at the new size, restore transparency so the resting
+// note keeps clean rounded corners, and persist the new post-it size.
+ipcMain.on('wm-sticky-resize-begin', (e) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  if (!win || win.isDestroyed() || !win._sticky) return;
+  win.setBackgroundColor(stickyNativeColor(win));
+  relaxStickySize(win);
+});
+
+ipcMain.on('wm-sticky-resize-end', (e) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  if (!win || win.isDestroyed() || !win._sticky) return;
+  const sb = win.getBounds();
+  lockStickySize(win, sb.width, sb.height);
+  win.setBackgroundColor('#00000000');
+  win._sticky.stickyBounds = sb;
+  win._lastStickyBounds = { ...sb };
   scheduleSaveStickies();
 });
 
@@ -1410,11 +1606,12 @@ ipcMain.handle('wm-sticky-restore', async (e) => {
   // bug guarded by the comment in renderer/toolbar.js).
   const deferredUrl = win._sticky.deferredUrl || null;
   const wasMaximized = win._sticky.wasMaximized;
-  // Remember where the sticky was sitting (post-user-drags) so the next
-  // shrink cycle reuses that spot. The move tracker clears this if the
-  // user drags the restored full-size window before re-shrinking.
+  // Remember where the sticky was sitting and how big it was (post drags
+  // and grip resizes) so the next shrink cycle reuses that spot and size.
+  // The move tracker clears this if the user drags the restored full-size
+  // window before re-shrinking.
   const sb = win._sticky.stickyBounds;
-  win._lastStickyBounds = sb ? { x: sb.x, y: sb.y } : null;
+  win._lastStickyBounds = sb ? { ...sb } : null;
   win._sticky = null;
   unpinStickyOnTop(win);
 
@@ -1441,7 +1638,16 @@ ipcMain.handle('wm-sticky-restore', async (e) => {
     if (info.hue === null) sendColorToWindow(win.id, null);
   }
 
-  await animateBounds(win, target, STICKY_ANIM_MS);
+  // Paint the native background the note colour for the grow: the overlay
+  // (still covering the window during the animation) is the same colour, so
+  // newly-exposed area never flashes transparent while the web buffer lags
+  // the resize. Reset to opaque white below once the window is full-size.
+  win.setBackgroundColor(stickyNativeColor(win));
+
+  // Grow from the recorded post-it rect (startOverride): if the WM had the
+  // window mid-maximize when the restore fired, the live bounds would be
+  // near-fullscreen and the animation would visibly shrink down first.
+  await animateBounds(win, target, STICKY_ANIM_MS, sb || undefined);
 
   // If the window was maximized before shrinking, re-flag it maximized
   // now that it's back at the work-area bounds. The animation already
@@ -1525,9 +1731,13 @@ ipcMain.on('settings-save', (_e, updated) => {
         const newSticky = stickyBoundsFor(w.getBounds());
         w._sticky.stickyBounds = newSticky;
         unlockStickySize(w);
+        // Note colour behind the resize, transparent again at rest — same
+        // dance as the shrink/grip handlers, so corners stay rounded.
+        w.setBackgroundColor(stickyNativeColor(w));
         animateBounds(w, newSticky, STICKY_ANIM_MS).then(() => {
           if (w.isDestroyed() || !w._sticky) return;
           lockStickySize(w, newSticky.width, newSticky.height);
+          w.setBackgroundColor('#00000000');
         });
       }
     }
@@ -1679,6 +1889,18 @@ ipcMain.on('open-closed-folia', (e, openedUrl) => {
   createWindow(openedUrl, opener, { restoreHistory: entry?.history || null });
 });
 
+// IPC: user clicked "Proceed anyway" on a cert-error overlay. Trust the host
+// for the rest of this session, then reload so setCertificateVerifyProc lets
+// the page through.
+ipcMain.on('cert-proceed', (e, url) => {
+  if (!url) return;
+  let hostname;
+  try { hostname = new URL(url).hostname; } catch { return; }
+  trustedCertHosts.add(hostname);
+  const win = BrowserWindow.fromWebContents(e.sender);
+  win?._guest?.loadURL(url);
+});
+
 // IPC: bulk privacy actions (every persisted partition + default session)
 ipcMain.handle('delete-cookies', async () => {
   for (const s of await eachSession()) {
@@ -1738,6 +1960,22 @@ if (!gotLock) {
   // session-created fires when Chromium first instantiates a partition (e.g.
   // via webview partition="persist:foo"), so this catches them lazily.
   app.on('session-created', attachDownloadHandler);
+
+  // TLS verification failures. By default we reject (callback(false)) so the
+  // load fails into the cert-error overlay. Once the user clicks "Proceed
+  // anyway", the host is in trustedCertHosts and the reload's certificate-error
+  // fires again — this time we allow it. Per-navigation, so it isn't subject to
+  // Chromium's cached-cert-result behaviour that setCertificateVerifyProc hits.
+  app.on('certificate-error', (event, _wc, url, _error, _cert, callback) => {
+    let hostname;
+    try { hostname = new URL(url).hostname; } catch {}
+    if (hostname && trustedCertHosts.has(hostname)) {
+      event.preventDefault();
+      callback(true);
+    } else {
+      callback(false);
+    }
+  });
 
   app.whenReady().then(async () => {
     // Block until Castlabs' Component Updater has the Widevine CDM installed.

@@ -15,6 +15,13 @@ contextBridge.exposeInMainWorld('wm', {
   shrinkToSticky:      (payload) => ipcRenderer.invoke('wm-sticky-shrink', payload),
   restoreFromSticky:   () => ipcRenderer.invoke('wm-sticky-restore'),
   newWindowFromSticky: () => ipcRenderer.send('wm-sticky-new-window'),
+  // Corner-grip resize: the renderer accumulates an absolute target size
+  // from relative pointer deltas and streams it to main, which applies it
+  // with the top-left anchored. begin/end bracket the drag so main can
+  // lift/re-pin the fixed-size lock and paint the native background.
+  setStickySize:     (w, h) => ipcRenderer.send('wm-sticky-resize', { w, h }),
+  stickyResizeBegin: () => ipcRenderer.send('wm-sticky-resize-begin'),
+  stickyResizeEnd:   () => ipcRenderer.send('wm-sticky-resize-end'),
   // Renderer pushes comment edits live (debounced) so the persisted file
   // tracks every typed character without main having to poll.
   updateStickyComment: (comment) => ipcRenderer.send('wm-sticky-update-comment', comment),
@@ -25,14 +32,6 @@ contextBridge.exposeInMainWorld('wm', {
   // lazy-restored sticky returns {lazy: true, url, verb, label, comment}
   // so the renderer can paint the overlay without loading the URL.
   getInitState:        () => ipcRenderer.invoke('get-init-state'),
-  // Main fires this when the WM's dblclick-maximize gesture lands on a
-  // sticky — we re-route it through the same path as the maximize-square
-  // button to keep the size-drift / corner-snap workarounds in one place.
-  onStickyRestoreRequested: (handler) => {
-    const fn = () => handler();
-    ipcRenderer.on('sticky-restore-requested', fn);
-    return () => ipcRenderer.removeListener('sticky-restore-requested', fn);
-  },
   // Settings broadcast. Main pushes the full settings object on every
   // save so any renderer (e.g. the sticky-zoom CSS variable) can react
   // live without polling.
@@ -62,10 +61,20 @@ contextBridge.exposeInMainWorld('wm', {
   getDefaultDownloadPath: () => ipcRenderer.invoke('default-download-path'),
   pickDownloadFolder:     () => ipcRenderer.invoke('pick-download-folder'),
   showDownloadInFolder:   (savePath) => ipcRenderer.send('show-download-in-folder', savePath),
+
+  // Cert errors: trust the failing host for this session and reload.
+  proceedWithCertError: (url) => ipcRenderer.send('cert-proceed', url),
   onDownload: (handler) => {
     const fn = (_e, payload) => handler(payload);
     ipcRenderer.on('download-event', fn);
     return () => ipcRenderer.removeListener('download-event', fn);
+  },
+  // Ctrl/Cmd+F pressed while the guest page had focus — forwarded from main
+  // (the host document keydown can't see keystrokes aimed at the guest).
+  onToggleFind: (handler) => {
+    const fn = () => handler();
+    ipcRenderer.on('toggle-find', fn);
+    return () => ipcRenderer.removeListener('toggle-find', fn);
   },
   // HTML5 fullscreen state from the guest (YouTube etc.). True while the
   // page has an element in :fullscreen; renderer hides chrome to match.
