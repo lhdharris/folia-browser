@@ -4,3 +4,8 @@ dist/
 *.log
 .venv/
 .claude/
+
+# Stray reference material at repo root — not part of Folia (the app is electron-app/).
+# Root main.js is notation-app's main process; res/ is a vendored design-reference copy.
+/main.js
+/res/

@@ -811,6 +811,26 @@ function createWindow(url, opener, options = {}) {
   const hash = restore ? '' : (url ? '#' + encodeURIComponent(url) : '');
   win.loadURL('file://' + path.join(__dirname, 'renderer', 'index.html') + hash);
 
+  // Right-click menu for the Folia chrome itself (URL bar, find-in-page box,
+  // sticky-note comment). This is the *renderer's* webContents, distinct from
+  // the guest webview's context-menu handler wired up in did-attach-webview
+  // below. Electron ships no default menu, so an editable field in our own
+  // chrome has no Cut/Copy/Paste without this. Only editable targets get a
+  // menu; right-clicking non-editable chrome is a no-op.
+  win.webContents.on('context-menu', (_e, params) => {
+    if (!params.isEditable) return;
+    const ef = params.editFlags || {};
+    const wc = win.webContents;
+    const template = [
+      { label: 'Cut',        accelerator: 'CmdOrCtrl+X', enabled: ef.canCut,       click: () => wc.cut() },
+      { label: 'Copy',       accelerator: 'CmdOrCtrl+C', enabled: ef.canCopy,      click: () => wc.copy() },
+      { label: 'Paste',      accelerator: 'CmdOrCtrl+V', enabled: ef.canPaste,     click: () => wc.paste() },
+      { type: 'separator' },
+      { label: 'Select all', accelerator: 'CmdOrCtrl+A', enabled: ef.canSelectAll, click: () => wc.selectAll() },
+    ];
+    Menu.buildFromTemplate(template).popup({ window: win });
+  });
+
   win.webContents.on('did-attach-webview', (_, wvContents) => {
     // Store the guest webContents so the toolbar dropdown (built in main)
     // can act on it (Copy URL, Refresh, Print to PDF, zoom).
