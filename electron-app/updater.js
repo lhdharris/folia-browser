@@ -125,7 +125,25 @@ function detectInstallerFormat() {
 function pickAsset(assets, format) {
   if (!Array.isArray(assets)) return null;
   const ext = '.' + format;
-  return assets.find((a) => typeof a.name === 'string' && a.name.toLowerCase().endsWith(ext)) || null;
+  const candidates = assets.filter(
+    (a) => typeof a.name === 'string' && a.name.toLowerCase().endsWith(ext)
+  );
+  if (candidates.length <= 1) return candidates[0] || null;
+
+  // More than one asset carries this extension. macOS ships a separate dmg
+  // per CPU arch (Castlabs' per-arch Widevine signatures block a universal
+  // binary, so we can't merge them) — "Folia Browser-<ver>.dmg" is the x64
+  // build, "…-arm64.dmg" the Apple Silicon one. Match the running arch so an
+  // Apple Silicon Mac isn't handed the Intel dmg or vice-versa. electron-builder
+  // only tags the non-default arch in the filename (arm64 gets an "arm64"
+  // token; the x64 build gets none), so "name contains arm64" is the
+  // discriminator, with a fallback to the other arch if only one was published.
+  // Linux (deb/rpm, x64-only) and Windows (a single multi-arch NSIS exe) have
+  // one candidate and never reach here.
+  const wantArm = process.arch === 'arm64';
+  const armAsset    = candidates.find((a) => /arm64/i.test(a.name));
+  const nonArmAsset = candidates.find((a) => !/arm64/i.test(a.name));
+  return (wantArm ? armAsset || nonArmAsset : nonArmAsset || armAsset) || candidates[0];
 }
 
 function formatBytes(b) {

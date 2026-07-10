@@ -46,13 +46,45 @@ won't otherwise re-resolve the commit.
 
 ```bash
 cd electron-app
-npm run build:mac      # → dist/Folia Browser-<ver>.dmg
-npm run build:linux    # → dist/folia-browser-<ver>.x86_64.rpm + folia-browser_<ver>_amd64.deb
-npm run build:win      # → dist/Folia Browser Setup <ver>.exe   (NSIS)
+npm run build:mac      # → dist/Folia Browser-<ver>.dmg (x64) + Folia Browser-<ver>-arm64.dmg
+npm run build:linux    # → dist/folia-browser-<ver>.x86_64.rpm + folia-browser_<ver>_amd64.deb  (x64)
+npm run build:win      # → dist/Folia Browser Setup <ver>.exe   (one NSIS installer, x64 + arm64)
 ```
 
 Build them separately (not `npm run build`) so a failure on one target is easy
 to spot. All artifacts land in `electron-app/dist/`.
+
+### Architectures: arm64 + x64 where Castlabs ships both
+
+The `build:*` scripts pin the arch flags on purpose — **never drop them.**
+electron-builder defaults to the *host* arch, so on this Apple Silicon Mac a bare
+`npm run build:linux`/`build:win` would try to package `arm64` and fail: Castlabs
+publishes **no `linux-arm64` ECS build** (`…-linux-arm64.zip → 404`). What Castlabs
+*does* publish for v43 decides what we can ship:
+
+| Platform | x64 | arm64 | What we build |
+|----------|-----|-------|---------------|
+| macOS    | ✓   | ✓     | **two dmgs** — `--x64 --arm64` (see universal note below) |
+| Windows  | ✓   | ✓     | **one multi-arch NSIS** `.exe` — `--x64 --arm64` bundles both, installer picks at run time |
+| Linux    | ✓   | ✗     | **x64 only** — `--x64` (no arm64 Widevine binary exists) |
+
+- **macOS can't be a universal binary.** `--mac dmg --universal` fails with
+  *"Expected all non-binary files to have identical SHAs"* because Castlabs' per-arch
+  Widevine signature (`Electron Framework.sig`) differs between the x64 and arm64
+  frameworks. So macOS ships **two separate dmgs** instead: `Folia Browser-<ver>.dmg`
+  (x64) and `Folia Browser-<ver>-arm64.dmg` (arm64 — electron-builder only tags the
+  non-default arch in the filename).
+- **Two dmgs means the updater must choose by arch.** `pickAsset` in `updater.js`
+  is arch-aware: when more than one asset shares an extension it matches
+  `process.arch` (arm64 → the `-arm64` dmg, x64 → the un-suffixed one), falling back
+  to the other arch if only one was published. Single-asset formats (Linux deb/rpm,
+  the one Windows exe) skip that path. **Because of this, always upload the x64 dmg
+  FIRST** (the `gh` command in step 3 lists it first): a user still on an *old*,
+  pre-arch-aware Folia falls back to a plain "first `.dmg`" match, and x64 runs on
+  every Mac (natively on Intel, via Rosetta 2 on Apple Silicon), so first == safe.
+- **Windows arm64 rides inside the one installer.** electron-builder's default NSIS
+  packs both arches into a single `Setup` exe that installs the matching build — no
+  second asset, so the updater's single-exe match still works.
 
 Notes:
 - macOS builds are **unsigned** (`mac.identity: null` in `package.json`), so
@@ -68,14 +100,16 @@ Notes:
 
 The hand-rolled updater (`electron-app/updater.js`) reads
 `api.github.com/repos/lhdharris/folia-browser/releases` and serves **each OS the
-matching asset from a single release**. So one release must carry all four
-installers, or users on the missing platforms won't get the update.
+matching asset from a single release**. So one release must carry every
+installer (all five assets), or users on the missing platforms won't get the
+update.
 
 ```bash
 cd electron-app
 VER=$(node -p "require('./package.json').version")
 gh release create "v$VER" \
   "dist/Folia Browser-$VER.dmg" \
+  "dist/Folia Browser-$VER-arm64.dmg" \
   "dist/folia-browser-$VER.x86_64.rpm" \
   "dist/folia-browser_${VER}_amd64.deb" \
   "dist/Folia Browser Setup $VER.exe" \
@@ -84,6 +118,10 @@ gh release create "v$VER" \
   --notes "See commit history for changes."
 ```
 
+The x64 dmg is listed **before** the arm64 dmg deliberately — see the arch note in
+step 2 (old pre-arch-aware clients fall back to the first `.dmg`, and x64 runs
+everywhere).
+
 Rules the updater depends on:
 - **Tag** is `vX.Y.Z` (a leading `v` is fine; the comparator strips it).
 - **Stable releases must NOT be marked prerelease.** Stable users (no `-` in
@@ -91,16 +129,21 @@ Rules the updater depends on:
   actual betas like `v2.4.0-beta.1` (add `--prerelease` above).
 - **Asset filenames are electron-builder's defaults** and already match what the
   updater expects — don't rename them:
-  - `Folia Browser-<ver>.dmg`
+  - `Folia Browser-<ver>.dmg`  (macOS **x64** — no arch suffix)
+  - `Folia Browser-<ver>-arm64.dmg`  (macOS **arm64** — electron-builder appends
+    `-arm64` only to the non-default arch)
   - `folia-browser-<ver>.x86_64.rpm`
   - `folia-browser_<ver>_amd64.deb`
-  - `Folia Browser Setup <ver>.exe`
+  - `Folia Browser Setup <ver>.exe`  (Windows x64 + arm64 in one installer)
+- GitHub rewrites spaces in uploaded asset names to dots
+  (`Folia.Browser-<ver>.dmg`). Harmless — the updater matches on extension +
+  the `arm64` token, both of which survive the rewrite.
 
 ---
 
 ## 4. Verify
 
-- On GitHub, the release shows all four assets and is **not** flagged Pre-release
+- On GitHub, the release shows all five assets (two dmgs + rpm + deb + exe) and is **not** flagged Pre-release
   (for a stable cut).
 - An older installed Folia should offer the update within its next check (at
   launch, then every 4 hours). To test immediately, install the previous version,
