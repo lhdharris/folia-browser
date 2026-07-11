@@ -75,13 +75,20 @@ publishes **no `linux-arm64` ECS build** (`…-linux-arm64.zip → 404`). What C
   (x64) and `Folia Browser-<ver>-arm64.dmg` (arm64 — electron-builder only tags the
   non-default arch in the filename).
 - **Two dmgs means the updater must choose by arch.** `pickAsset` in `updater.js`
-  is arch-aware: when more than one asset shares an extension it matches
-  `process.arch` (arm64 → the `-arm64` dmg, x64 → the un-suffixed one), falling back
-  to the other arch if only one was published. Single-asset formats (Linux deb/rpm,
-  the one Windows exe) skip that path. **Because of this, always upload the x64 dmg
-  FIRST** (the `gh` command in step 3 lists it first): a user still on an *old*,
-  pre-arch-aware Folia falls back to a plain "first `.dmg`" match, and x64 runs on
-  every Mac (natively on Intel, via Rosetta 2 on Apple Silicon), so first == safe.
+  (shipping since 2.3.0) is arch-aware: when more than one asset shares an extension
+  it matches `process.arch` (arm64 → the `-arm64` dmg, x64 → the un-suffixed one),
+  falling back to the other arch if only one was published. Single-asset formats
+  (Linux deb/rpm, the one Windows exe) skip that path. So for anyone on **2.3.0 or
+  newer, arch selection is automatic and upload order is irrelevant** — GitHub
+  serves the `/releases` assets alphabetically anyway (`…-arm64.dmg` sorts before
+  `….dmg`), which you can't control.
+- **One-time transition caveat.** A Mac still on a *pre-2.3.0* Folia has the old
+  extension-only updater that just grabs the first `.dmg` — which, per GitHub's
+  alphabetical order, is the **arm64** one. On Apple Silicon that's correct; on an
+  **Intel** Mac it's the wrong arch, so that (rare) user needs a **manual** x64
+  download (`Folia Browser-<ver>.dmg`) once to get onto the arch-aware updater.
+  Nothing to do at release time — just know it's a pre-2.3.0 legacy edge, not an
+  ongoing problem.
 - **Windows arm64 rides inside the one installer.** electron-builder's default NSIS
   packs both arches into a single `Setup` exe that installs the matching build — no
   second asset, so the updater's single-exe match still works.
@@ -118,9 +125,9 @@ gh release create "v$VER" \
   --notes "See commit history for changes."
 ```
 
-The x64 dmg is listed **before** the arm64 dmg deliberately — see the arch note in
-step 2 (old pre-arch-aware clients fall back to the first `.dmg`, and x64 runs
-everywhere).
+(Upload order doesn't matter — GitHub serves release assets alphabetically, and
+the 2.3.0+ updater picks the dmg by CPU arch regardless. See the arch note in
+step 2 for the one-time pre-2.3.0 caveat.)
 
 Rules the updater depends on:
 - **Tag** is `vX.Y.Z` (a leading `v` is fine; the comparator strips it).
