@@ -82,9 +82,12 @@ if (onWaylandSession &&
 // Chromium's Component Updater Service the first time `components.whenReady()`
 // resolves — see app.whenReady() below.
 
-// `userData` is `appData/<package.json name>` — i.e. `folia-browser` on every
-// platform — so this stays consistent regardless of where Chromium parks
-// other state (cookies, the Castlabs Components/CDM cache, etc.).
+// `userData` is `appData/<app.getName()>`, which the `app.setName()` call
+// above pins to `Folia Browser` / `Folia Browser (dev)` — NOT the
+// lowercase-hyphenated `package.json` `name` field. So on disk this is
+// `~/.config/Folia Browser/` (Linux) or `~/Library/Application Support/Folia
+// Browser/` (macOS), alongside cookies, the Castlabs Components/CDM cache,
+// etc.
 const SETTINGS_PATH = path.join(app.getPath('userData'), 'settings.json');
 // Stickied windows persisted across app restarts. Each entry is enough to
 // re-create a lazy sticky on next launch (URL deferred until restore — see
